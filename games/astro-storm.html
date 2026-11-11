@@ -1,0 +1,414 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Astro Storm 3D</title>
+<link rel="stylesheet" href="../assets/arcade.css">
+<style>
+  .view canvas { cursor: none; background: #03050c; }
+</style>
+</head>
+<body class="canvas-game" data-pad-hint="Controller: stick or D-pad to aim, A or RT to fire.">
+<header class="bar">
+  <a href="../index.html">&larr; All games</a>
+  <h1>Astro Storm 3D</h1>
+  <div class="stats">
+    <div class="stat"><small>Sector</small><b id="sector">1</b></div>
+    <div class="stat" id="shieldStat"><small>Shield</small><b id="shield">100%</b></div>
+    <div class="stat"><small>Score</small><b id="score">0</b></div>
+  </div>
+</header>
+<div class="view"><canvas id="c"></canvas></div>
+
+<script src="../assets/arcade.js"></script>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const canvas = $("c");
+  const ctx = canvas.getContext("2d");
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+
+  // Builds a closed mesh from vertices by finding all equilateral triangles of the given edge length.
+  function mesh(verts, edge) {
+    const faces = [];
+    const d = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+    for (let i = 0; i < verts.length; i++)
+      for (let j = i + 1; j < verts.length; j++)
+        for (let k = j + 1; k < verts.length; k++) {
+          const [a, b, c] = [verts[i], verts[j], verts[k]];
+          if (![d(a, b), d(b, c), d(a, c)].every((x) => Math.abs(x - edge) < 0.01)) continue;
+          const outward = dot(cross(sub(b, a), sub(c, a)), [a[0] + b[0] + c[0], a[1] + b[1] + c[1], a[2] + b[2] + c[2]]) > 0;
+          faces.push(outward ? [i, j, k] : [i, k, j]);
+        }
+    return { verts: verts.map((v) => v.map((c) => c / Math.hypot(...v))), faces };
+  }
+
+  const PHI = (1 + Math.sqrt(5)) / 2;
+  const icoVerts = [];
+  for (const a of [-1, 1]) for (const b of [-PHI, PHI]) icoVerts.push([0, a, b], [a, b, 0], [b, 0, a]);
+  const ICO = mesh(icoVerts, 2);
+  const OCTA = mesh([[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]], Math.SQRT2);
+  const LIGHT = (() => { const l = [-0.45, 0.6, -0.66], n = Math.hypot(...l); return l.map((c) => c / n); })();
+
+  const FAR = 2600;
+  const RADII = { 1: 26, 2: 45, 3: 72 };
+  const POINTS = { 1: 100, 2: 50, 3: 20 };
+  const DAMAGE = { 1: 10, 2: 18, 3: 28 };
+  const HUES = { 0: 140, 1: 40, 2: 195, 3: 285 };
+
+  let W = 0, H = 0, F = 1, CX = 0, CY = 0;
+  let state = "intro", t = 0, score = 0, kills = 0, shield = 100, sector = 1;
+  let rocks = [], parts = [], beams = [], pops = [];
+  let aim = { x: 0, y: 0 }, firing = false, cool = 0, nextSpawn = 0.8, nextCrystal = 16;
+  let shake = 0, hurt = 0, banner = { text: "", life: 0 }, cannon = 0, deadTimer = 0;
+  const keys = new Set();
+  const stars = Array.from({ length: 220 }, () => ({ x: rand(-1600, 1600), y: rand(-1000, 1000), z: rand(20, FAR) }));
+
+  function resize() {
+    ({ w: W, h: H } = Arcade.fitCanvas(canvas, ctx));
+    F = Math.min(W, H * 1.4) * 0.9;
+    CX = W / 2;
+    CY = H / 2;
+    aim.x = Math.min(Math.max(aim.x || CX, 0), W);
+    aim.y = Math.min(Math.max(aim.y || CY, 0), H);
+  }
+
+  const proj = (p) => [CX + (p[0] * F) / p[2], CY - (p[1] * F) / p[2]];
+  const speedNow = () => Math.min(1000, 380 + t * 6);
+
+  function makeRock(size, pos, vel) {
+    const m = size ? ICO : OCTA;
+    return {
+      size, pos, vel, mesh: m, r: size ? RADII[size] : 30, hue: HUES[size],
+      jit: m.verts.map(() => (size ? rand(0.78, 1.15) : 1)),
+      a: rand(0, 6), b: rand(0, 6), sa: rand(-1.6, 1.6), sb: rand(-1.6, 1.6),
+    };
+  }
+
+  function spawn(size) {
+    const pos = [rand(-900, 900), rand(-550, 550), FAR];
+    const dir = sub([rand(-230, 230), rand(-150, 150), 0], pos);
+    const len = Math.hypot(...dir), s = speedNow();
+    rocks.push(makeRock(size, pos, dir.map((c) => (c / len) * s)));
+  }
+
+  function burst(pos, hue, count, power) {
+    for (let i = 0; i < count; i++) {
+      const life = rand(0.5, 1.1);
+      parts.push({ p: pos.slice(), v: [rand(-power, power), rand(-power, power), rand(-power, power)], life, max: life, hue });
+    }
+  }
+
+  function popup(pos, text, color) {
+    if (pos[2] < 12) return;
+    const [x, y] = proj(pos);
+    pops.push({ x, y, text, color, life: 0.9 });
+  }
+
+  function destroy(rock) {
+    rocks.splice(rocks.indexOf(rock), 1);
+    burst(rock.pos, rock.hue, 22, 260);
+    if (!rock.size) {
+      shield = Math.min(100, shield + 25);
+      popup(rock.pos, "+25 SHIELD", "#5dffa0");
+      return;
+    }
+    kills++;
+    score += POINTS[rock.size];
+    popup(rock.pos, "+" + POINTS[rock.size], "#ffc94d");
+    if (rock.size > 1) {
+      for (const side of [-1, 1]) {
+        const pos = [rock.pos[0] + side * rock.r * 0.5, rock.pos[1] + rand(-20, 20), rock.pos[2]];
+        const vel = [rock.vel[0] + side * rand(60, 170), rock.vel[1] + rand(-140, 140), rock.vel[2] * rand(0.95, 1.2)];
+        rocks.push(makeRock(rock.size - 1, pos, vel));
+      }
+    }
+  }
+
+  // Lasers are instant: cast a ray through the crosshair and hit the nearest rock it touches.
+  function shoot() {
+    const raw = [(aim.x - CX) / F, -(aim.y - CY) / F, 1];
+    const len = Math.hypot(...raw);
+    const d = raw.map((c) => c / len);
+    let best = null, bestT = Infinity;
+    for (const r of rocks) {
+      const along = dot(r.pos, d);
+      if (along <= 0) continue;
+      const miss2 = dot(r.pos, r.pos) - along * along;
+      const reach = r.r * 1.25;
+      if (miss2 < reach * reach && along < bestT) { best = r; bestT = along; }
+    }
+    cannon ^= 1;
+    beams.push({ x1: cannon ? W * 0.84 : W * 0.16, y1: H + 6, x2: aim.x, y2: aim.y, life: 0.09 });
+    if (best) destroy(best);
+  }
+
+  function damage(amount) {
+    shield = Math.max(0, shield - amount);
+    hurt = 0.45;
+    shake = 0.35;
+    if (shield <= 0) {
+      state = "dead";
+      deadTimer = 1.5;
+      burst([0, 0, 220], 330, 90, 420);
+    }
+  }
+
+  function update(dt) {
+    const starSpeed = state === "play" ? 500 + speedNow() : 260;
+    for (const s of stars) {
+      s.z -= starSpeed * dt;
+      if (s.z < 20) { s.z += FAR - 20; s.x = rand(-1600, 1600); s.y = rand(-1000, 1000); }
+    }
+    for (const p of parts) { for (let i = 0; i < 3; i++) p.p[i] += p.v[i] * dt; p.life -= dt; }
+    parts = parts.filter((p) => p.life > 0 && p.p[2] > 12);
+    for (const p of pops) { p.y -= 45 * dt; p.life -= dt; }
+    pops = pops.filter((p) => p.life > 0);
+    for (const b of beams) b.life -= dt;
+    beams = beams.filter((b) => b.life > 0);
+    shake = Math.max(0, shake - dt);
+    hurt = Math.max(0, hurt - dt);
+    banner.life -= dt;
+
+    if (state === "dead") {
+      deadTimer -= dt;
+      if (deadTimer <= 0) {
+        state = "over";
+        Arcade.over({
+          game: "astro",
+          score,
+          headline: "Ship destroyed!",
+          lesson: kills + " asteroids blasted. You reached sector " + sector + ".",
+        });
+      }
+    }
+    if (state !== "play") return;
+
+    t += dt;
+    const nowSector = 1 + Math.floor(t / 25);
+    if (nowSector !== sector) {
+      sector = nowSector;
+      banner = { text: "SECTOR " + sector, life: 2 };
+    }
+    nextSpawn -= dt;
+    if (nextSpawn <= 0) {
+      spawn(Math.random() < 0.7 ? 3 : 2);
+      nextSpawn = Math.max(0.35, 1.4 - t * 0.015);
+    }
+    nextCrystal -= dt;
+    if (nextCrystal <= 0) {
+      spawn(0);
+      nextCrystal = rand(15, 22);
+    }
+
+    const ax = (keys.has("ArrowRight") || keys.has("d") ? 1 : 0) - (keys.has("ArrowLeft") || keys.has("a") ? 1 : 0);
+    const ay = (keys.has("ArrowDown") || keys.has("s") ? 1 : 0) - (keys.has("ArrowUp") || keys.has("w") ? 1 : 0);
+    aim.x = Math.min(W, Math.max(0, aim.x + ax * 700 * dt));
+    aim.y = Math.min(H, Math.max(0, aim.y + ay * 700 * dt));
+
+    cool -= dt;
+    if (firing && cool <= 0) {
+      shoot();
+      cool = 0.13;
+    }
+
+    for (const r of [...rocks]) {
+      for (let i = 0; i < 3; i++) r.pos[i] += r.vel[i] * dt;
+      r.a += r.sa * dt;
+      r.b += r.sb * dt;
+      if (r.pos[2] > 40) continue;
+      rocks.splice(rocks.indexOf(r), 1);
+      if (r.size && Math.abs(r.pos[0]) < 160 && Math.abs(r.pos[1]) < 110) damage(DAMAGE[r.size]);
+      if (state !== "play") return;
+    }
+  }
+
+  function drawRock(r) {
+    const ca = Math.cos(r.a), sa = Math.sin(r.a), cb = Math.cos(r.b), sb = Math.sin(r.b);
+    const pts = r.mesh.verts.map((v, i) => {
+      const k = r.jit[i] * r.r;
+      let x = v[0] * k, y = v[1] * k, z = v[2] * k;
+      [y, z] = [y * ca - z * sa, y * sa + z * ca];
+      [x, z] = [x * cb + z * sb, -x * sb + z * cb];
+      return [x + r.pos[0], y + r.pos[1], z + r.pos[2]];
+    });
+    ctx.globalAlpha = Math.min(1, (FAR - r.pos[2]) / 500);
+    ctx.lineWidth = r.size ? 1.6 : 2.4;
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = `hsl(${r.hue} 95% ${r.size ? 65 : 70}%)`;
+    for (const [i, j, k] of r.mesh.faces) {
+      const p0 = pts[i], p1 = pts[j], p2 = pts[k];
+      if (p0[2] < 12 || p1[2] < 12 || p2[2] < 12) continue;
+      const n = cross(sub(p1, p0), sub(p2, p0));
+      if (dot(n, p0) >= 0) continue; // facing away from the camera
+      const light = Math.max(0, dot(n, LIGHT) / Math.hypot(...n));
+      ctx.fillStyle = `hsl(${r.hue} ${r.size ? 40 : 80}% ${6 + light * (r.size ? 16 : 30)}%)`;
+      const a = proj(p0), b = proj(p1), c = proj(p2);
+      ctx.beginPath();
+      ctx.moveTo(a[0], a[1]);
+      ctx.lineTo(b[0], b[1]);
+      ctx.lineTo(c[0], c[1]);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function draw() {
+    ctx.fillStyle = "#03050c";
+    ctx.fillRect(0, 0, W, H);
+    ctx.save();
+    if (shake > 0) ctx.translate(rand(-12, 12) * shake, rand(-12, 12) * shake);
+
+    const streak = state === "play" ? 40 + speedNow() * 0.06 : 25;
+    ctx.lineWidth = 1.5;
+    for (const s of stars) {
+      const a = proj([s.x, s.y, s.z]), b = proj([s.x, s.y, s.z + streak]);
+      ctx.strokeStyle = `rgba(200, 220, 255, ${1 - s.z / FAR})`;
+      ctx.beginPath();
+      ctx.moveTo(a[0], a[1]);
+      ctx.lineTo(b[0], b[1]);
+      ctx.stroke();
+    }
+
+    rocks.slice().sort((a, b) => b.pos[2] - a.pos[2]).forEach(drawRock);
+
+    for (const p of parts) {
+      const [x, y] = proj(p.p);
+      const size = Math.min(8, Math.max(1.5, 500 / p.p[2]));
+      ctx.fillStyle = `hsl(${p.hue} 100% 70% / ${p.life / p.max})`;
+      ctx.fillRect(x - size / 2, y - size / 2, size, size);
+    }
+
+    for (const b of beams) {
+      const alpha = b.life / 0.09;
+      ctx.strokeStyle = `rgba(93, 255, 160, ${alpha})`;
+      ctx.lineWidth = 6;
+      ctx.beginPath();
+      ctx.moveTo(b.x1, b.y1);
+      ctx.lineTo(b.x2, b.y2);
+      ctx.stroke();
+      ctx.strokeStyle = `rgba(255, 255, 255, ${alpha})`;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+
+    // Cannons swivel toward the crosshair.
+    for (const bx of [W * 0.16, W * 0.84]) {
+      const ang = Math.atan2(aim.y - (H + 6), aim.x - bx);
+      ctx.strokeStyle = "#33406b";
+      ctx.lineWidth = 16;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(bx, H + 6);
+      ctx.lineTo(bx + Math.cos(ang) * 70, H + 6 + Math.sin(ang) * 70);
+      ctx.stroke();
+      ctx.lineCap = "butt";
+    }
+
+    ctx.textAlign = "center";
+    ctx.font = "bold 20px Consolas, monospace";
+    for (const p of pops) {
+      ctx.globalAlpha = p.life / 0.9;
+      ctx.fillStyle = p.color;
+      ctx.fillText(p.text, p.x, p.y);
+    }
+    ctx.globalAlpha = 1;
+
+    if (state === "play") {
+      ctx.strokeStyle = firing ? "#ffc94d" : "#5dffa0";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(aim.x, aim.y, 16, 0, Math.PI * 2);
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        ctx.moveTo(aim.x + dx * 10, aim.y + dy * 10);
+        ctx.lineTo(aim.x + dx * 26, aim.y + dy * 26);
+      }
+      ctx.stroke();
+    }
+
+    if (banner.life > 0) {
+      ctx.globalAlpha = Math.min(1, banner.life);
+      ctx.fillStyle = "#5dc8ff";
+      ctx.font = "bold 54px Consolas, monospace";
+      ctx.fillText(banner.text, CX, H * 0.3);
+      ctx.globalAlpha = 1;
+    }
+    ctx.restore();
+
+    if (hurt > 0) {
+      ctx.fillStyle = `rgba(255, 60, 110, ${hurt * 0.6})`;
+      ctx.fillRect(0, 0, W, H);
+    }
+  }
+
+  const shown = {};
+  function hud() {
+    const vals = { sector, shield: Math.ceil(shield) + "%", score };
+    for (const [id, v] of Object.entries(vals)) {
+      if (shown[id] !== v) { $(id).textContent = v; shown[id] = v; }
+    }
+    $("shieldStat").classList.toggle("warn", shield < 35);
+  }
+
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    update(dt);
+    draw();
+    hud();
+    requestAnimationFrame(frame);
+  }
+
+  function setAim(e) {
+    const r = canvas.getBoundingClientRect();
+    aim.x = e.clientX - r.left;
+    aim.y = e.clientY - r.top;
+  }
+  canvas.addEventListener("pointermove", setAim);
+  canvas.addEventListener("pointerdown", (e) => {
+    canvas.setPointerCapture(e.pointerId);
+    setAim(e);
+    firing = true;
+  });
+  ["pointerup", "pointercancel"].forEach((type) => canvas.addEventListener(type, () => { firing = false; }));
+  window.addEventListener("keydown", (e) => {
+    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    keys.add(k);
+    if (k === " " && state === "play") { firing = true; e.preventDefault(); }
+    if (k.startsWith("Arrow")) e.preventDefault();
+  });
+  window.addEventListener("keyup", (e) => {
+    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    keys.delete(k);
+    if (k === " ") firing = false;
+  });
+  window.addEventListener("resize", resize);
+
+  resize();
+  Arcade.watchIdle();
+  requestAnimationFrame(frame);
+  Arcade.intro({
+    title: "Astro Storm 3D",
+    how: [
+      "Asteroids are flying straight at your ship!",
+      "Aim with your mouse or finger. Hold down to fire.",
+      "Big rocks split into smaller pieces worth more points.",
+      "Shoot the green crystals to repair your shield.",
+      "Keyboard: arrows or WASD to aim, space to fire.",
+    ],
+    button: "Launch!",
+    onStart() {
+      state = "play";
+      aim = { x: CX, y: CY };
+      banner = { text: "SECTOR 1", life: 2 };
+    },
+  });
+</script>
+</body>
+</html>

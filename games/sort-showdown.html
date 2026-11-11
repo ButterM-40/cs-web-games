@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sort Showdown</title>
+<link rel="stylesheet" href="../assets/arcade.css">
+<style>
+  .boards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; }
+  .board { padding: 14px; background: var(--panel); border: 2px solid var(--line); border-radius: 10px; }
+  .board h2 { margin: 0 0 10px; font-size: 20px; }
+  .bars { display: flex; align-items: flex-end; gap: 5px; height: 300px; }
+  .sortbar {
+    flex: 1 1 0; min-width: 0; padding: 4px 0; display: flex; align-items: flex-end; justify-content: center;
+    font-weight: 700; color: #071425; background: var(--blue); border: 3px solid var(--blue); border-radius: 6px 6px 0 0;
+  }
+  button.sortbar:hover { border-color: var(--amber); }
+  .sortbar.picked { background: var(--amber); border-color: var(--amber); }
+  .sortbar.compare { background: var(--amber); border-color: var(--amber); }
+  .sortbar.swap { background: var(--pink); border-color: var(--pink); }
+  .cpu .sortbar { background: #c99bff; border-color: #c99bff; }
+  .cpu .sortbar.compare { background: var(--amber); border-color: var(--amber); }
+  .cpu .sortbar.swap { background: var(--pink); border-color: var(--pink); }
+  #counts { color: var(--muted); margin: 10px 0 0; font-size: 16px; }
+  #tip { margin: 0 0 14px; color: var(--amber); }
+  @media (max-width: 700px) { .bars { height: 170px; } }
+</style>
+</head>
+<body data-pad-hint="Controller: D-pad or stick to pick, A to press. Keyboard: arrow keys and Enter.">
+<header class="bar">
+  <a href="../index.html">&larr; All games</a>
+  <h1>Sort Showdown</h1>
+  <div class="stats">
+    <div class="stat"><small>Round</small><b id="round">1/3</b></div>
+    <div class="stat"><small>Score</small><b id="score">0</b></div>
+  </div>
+</header>
+
+<div class="stage">
+  <p id="tip">Tap two bars to swap them. Sort shortest to tallest!</p>
+  <div class="boards">
+    <section class="board">
+      <h2>You</h2>
+      <div class="bars" id="mine"></div>
+    </section>
+    <section class="board cpu">
+      <h2 id="cpuName">Computer</h2>
+      <div class="bars" id="theirs"></div>
+      <p id="counts">Comparisons: 0 &middot; Swaps: 0</p>
+    </section>
+  </div>
+</div>
+
+<script src="../assets/arcade.js"></script>
+<script>
+  function bubbleSteps(a) {
+    const steps = [];
+    for (let end = a.length - 1; end > 0; end--) {
+      let swapped = false;
+      for (let i = 0; i < end; i++) {
+        steps.push(["compare", i, i + 1]);
+        if (a[i] > a[i + 1]) {
+          [a[i], a[i + 1]] = [a[i + 1], a[i]];
+          steps.push(["swap", i, i + 1]);
+          swapped = true;
+        }
+      }
+      if (!swapped) break;
+    }
+    return steps;
+  }
+
+  function insertionSteps(a) {
+    const steps = [];
+    for (let i = 1; i < a.length; i++) {
+      for (let j = i; j > 0; j--) {
+        steps.push(["compare", j - 1, j]);
+        if (a[j - 1] <= a[j]) break;
+        [a[j - 1], a[j]] = [a[j], a[j - 1]];
+        steps.push(["swap", j - 1, j]);
+      }
+    }
+    return steps;
+  }
+
+  function quickSteps(a) {
+    const steps = [];
+    function sort(lo, hi) {
+      if (lo >= hi) return;
+      let store = lo;
+      for (let i = lo; i < hi; i++) {
+        steps.push(["compare", i, hi]);
+        if (a[i] < a[hi]) {
+          if (i !== store) {
+            [a[i], a[store]] = [a[store], a[i]];
+            steps.push(["swap", i, store]);
+          }
+          store++;
+        }
+      }
+      if (store !== hi) {
+        [a[store], a[hi]] = [a[hi], a[store]];
+        steps.push(["swap", store, hi]);
+      }
+      sort(lo, store - 1);
+      sort(store + 1, hi);
+    }
+    sort(0, a.length - 1);
+    return steps;
+  }
+
+  const ROUNDS = [
+    { name: "Bubble Sort", size: 7, tick: 420, steps: bubbleSteps,
+      blurb: "Bubble Sort compares neighbors and swaps them, over and over. Simple, but slow." },
+    { name: "Insertion Sort", size: 8, tick: 260, steps: insertionSteps,
+      blurb: "Insertion Sort slides each bar back into place, like sorting cards in your hand." },
+    { name: "Quicksort", size: 10, tick: 130, steps: quickSteps,
+      blurb: "Quicksort picks a pivot and splits the problem in two. A smarter idea beats raw effort." },
+  ];
+
+  const $ = (id) => document.getElementById(id);
+  let round = 0, score = 0, wins = 0;
+  let mine = [], theirs = [], plan = [], planIndex = 0, picked = -1, live = false, timer = 0;
+  let comparisons = 0, swaps = 0;
+
+  const isSorted = (a) => a.every((v, i) => i === 0 || a[i - 1] <= v);
+  const label = (n) => "Round " + (n + 1) + ": " + ROUNDS[n].name;
+
+  function makeBars() {
+    const size = ROUNDS[round].size;
+    const ordered = Array.from({ length: size }, (_, i) => i + 1);
+    let values;
+    do { values = Arcade.shuffle(ordered); } while (isSorted(values));
+    return values;
+  }
+
+  function drawMine() {
+    const max = ROUNDS[round].size;
+    $("mine").replaceChildren(...mine.map((v, i) => {
+      const b = Arcade.el("button", { className: "sortbar" + (i === picked ? " picked" : ""), type: "button", textContent: v });
+      b.style.height = (v / max) * 100 + "%";
+      b.addEventListener("click", () => pick(i));
+      return b;
+    }));
+  }
+
+  function drawTheirs(mark, a, b) {
+    const max = ROUNDS[round].size;
+    $("theirs").replaceChildren(...theirs.map((v, i) => {
+      const bar = Arcade.el("div", { className: "sortbar" + (i === a || i === b ? " " + mark : ""), textContent: v });
+      bar.style.height = (v / max) * 100 + "%";
+      return bar;
+    }));
+    $("counts").textContent = "Comparisons: " + comparisons + " · Swaps: " + swaps;
+  }
+
+  function pick(i) {
+    if (!live) return;
+    if (picked === -1) {
+      picked = i;
+    } else if (picked === i) {
+      picked = -1;
+    } else {
+      [mine[picked], mine[i]] = [mine[i], mine[picked]];
+      picked = -1;
+    }
+    drawMine();
+    if (isSorted(mine)) endRound(true);
+  }
+
+  function step() {
+    if (!live) return;
+    if (planIndex >= plan.length) {
+      drawTheirs();
+      endRound(false);
+      return;
+    }
+    const [kind, a, b] = plan[planIndex++];
+    if (kind === "compare") comparisons++;
+    else {
+      swaps++;
+      [theirs[a], theirs[b]] = [theirs[b], theirs[a]];
+    }
+    drawTheirs(kind, a, b);
+    timer = setTimeout(step, ROUNDS[round].tick);
+  }
+
+  function startRound() {
+    mine = makeBars();
+    theirs = mine.slice();
+    plan = ROUNDS[round].steps(mine.slice());
+    planIndex = 0;
+    picked = -1;
+    comparisons = 0;
+    swaps = 0;
+    live = true;
+    $("round").textContent = round + 1 + "/" + ROUNDS.length;
+    $("cpuName").textContent = ROUNDS[round].name;
+    drawMine();
+    drawTheirs();
+    timer = setTimeout(step, ROUNDS[round].tick);
+  }
+
+  function endRound(playerWon) {
+    live = false;
+    clearTimeout(timer);
+    let result;
+    if (playerWon) {
+      wins++;
+      const gained = 300 * (round + 1) + (plan.length - planIndex) * 10;
+      score += gained;
+      result = "You beat " + ROUNDS[round].name + "! +" + gained;
+    } else {
+      const placed = mine.filter((v, i) => v === i + 1).length;
+      const gained = placed * 20;
+      score += gained;
+      result = ROUNDS[round].name + " won. You had " + placed + " bars in place: +" + gained;
+    }
+    $("score").textContent = score;
+
+    round++;
+    if (round >= ROUNDS.length) {
+      Arcade.over({
+        game: "sort",
+        score,
+        headline: "You won " + wins + " of " + ROUNDS.length,
+        lesson: result + ". With a million items, Bubble Sort needs billions of steps and Quicksort only about 20 million. The right algorithm matters!",
+      });
+      return;
+    }
+    Arcade.intro({ title: label(round), how: [result], lesson: ROUNDS[round].blurb, button: "Race!", onStart: startRound });
+  }
+
+  Arcade.watchIdle();
+  Arcade.intro({
+    title: "Sort Showdown",
+    how: [
+      "Sort the bars shortest to tallest before the computer does.",
+      "Tap one bar, then another, to swap them.",
+      "The computer can only look at a few bars at a time.",
+      "Three rounds. Each algorithm is smarter than the last!",
+    ],
+    lesson: label(0) + ". " + ROUNDS[0].blurb,
+    button: "Race!",
+    onStart: startRound,
+  });
+</script>
+</body>
+</html>

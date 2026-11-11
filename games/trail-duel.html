@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trail Duel</title>
+<link rel="stylesheet" href="../assets/arcade.css">
+</head>
+<body class="canvas-game" data-pad-hint="Controllers: the first one plays Pink, the second plays Cyan.">
+<header class="bar">
+  <a href="../index.html">&larr; All games</a>
+  <h1>Trail Duel</h1>
+  <div class="stats">
+    <div class="stat"><small id="name0">Pink</small><b id="wins0" style="color: var(--pink)">0</b></div>
+    <div class="stat"><small id="name1">Cyan</small><b id="wins1" style="color: var(--blue)">0</b></div>
+  </div>
+</header>
+<div class="view"><canvas id="c"></canvas></div>
+
+<script src="../assets/arcade.js"></script>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const canvas = $("c");
+  const ctx = canvas.getContext("2d");
+  const COLS = 60, ROWS = 36, TICK = 0.075, WIN = 3;
+  const DIRS = [[0, -1], [1, 0], [0, 1], [-1, 0]]; // up, right, down, left
+  const COLORS = ["#ff5d8f", "#5dc8ff"];
+  const P1_KEYS = { w: 0, d: 1, s: 2, a: 3 };
+  const P2_KEYS = { ArrowUp: 0, ArrowRight: 1, ArrowDown: 2, ArrowLeft: 3 };
+
+  let W = 0, H = 0;
+  let mode = 1, state = "menu", grid = new Uint8Array(COLS * ROWS), players = [], wins = [0, 0];
+  let countdown = 0, acc = 0, message = "", messageTimer = 0;
+
+  const names = () => ["Pink", mode === 1 ? "CPU" : "Cyan"];
+  const free = (x, y) => x >= 0 && y >= 0 && x < COLS && y < ROWS && grid[y * COLS + x] === 0;
+
+  function resize() {
+    ({ w: W, h: H } = Arcade.fitCanvas(canvas, ctx));
+  }
+
+  function hud() {
+    names().forEach((n, i) => {
+      $("name" + i).textContent = n;
+      $("wins" + i).textContent = wins[i];
+    });
+  }
+
+  function startRound() {
+    grid = new Uint8Array(COLS * ROWS);
+    const mid = ROWS >> 1;
+    players = [
+      { x: 8, y: mid, dir: 1, queue: [] },
+      { x: COLS - 9, y: mid, dir: 3, queue: [] },
+    ];
+    players.forEach((p, i) => { grid[p.y * COLS + p.x] = i + 1; });
+    countdown = 3;
+    acc = 0;
+    state = "countdown";
+  }
+
+  function startMatch(m) {
+    mode = m;
+    wins = [0, 0];
+    hud();
+    startRound();
+  }
+
+  function steer(i, d) {
+    const p = players[i];
+    if (!p || (state !== "play" && state !== "countdown")) return;
+    const lastDir = p.queue.length ? p.queue[p.queue.length - 1] : p.dir;
+    if (d === lastDir || d === (lastDir + 2) % 4 || p.queue.length >= 2) return;
+    p.queue.push(d);
+  }
+
+  // Counts reachable empty cells (up to a limit) to judge how much room a move leaves.
+  function room(sx, sy, limit) {
+    const seen = new Uint8Array(COLS * ROWS);
+    const queue = [[sx, sy]];
+    seen[sy * COLS + sx] = 1;
+    let count = 0;
+    while (queue.length && count < limit) {
+      const [x, y] = queue.shift();
+      count++;
+      for (const [dx, dy] of DIRS) {
+        const nx = x + dx, ny = y + dy;
+        if (free(nx, ny) && !seen[ny * COLS + nx]) {
+          seen[ny * COLS + nx] = 1;
+          queue.push([nx, ny]);
+        }
+      }
+    }
+    return count;
+  }
+
+  function cpuDir(p, rival) {
+    const options = [p.dir, (p.dir + 3) % 4, (p.dir + 1) % 4];
+    const scores = options.map((d) => {
+      const x = p.x + DIRS[d][0], y = p.y + DIRS[d][1];
+      if (!free(x, y)) return -1;
+      let s = room(x, y, 300);
+      if (Math.abs(x - rival.x) + Math.abs(y - rival.y) === 1) s -= 40; // avoid head-on swaps
+      return s;
+    });
+    const best = Math.max(...scores);
+    if (Math.random() < 0.06) {
+      const good = options.filter((_, i) => scores[i] >= 0 && scores[i] >= best * 0.9);
+      return good[Math.floor(Math.random() * good.length)];
+    }
+    return options[scores.indexOf(best)];
+  }
+
+  function tick() {
+    if (mode === 1) players[1].queue = [cpuDir(players[1], players[0])];
+    for (const p of players) {
+      if (p.queue.length) p.dir = p.queue.shift();
+      p.nx = p.x + DIRS[p.dir][0];
+      p.ny = p.y + DIRS[p.dir][1];
+    }
+    const dead = players.map((p) => !free(p.nx, p.ny));
+    if (players[0].nx === players[1].nx && players[0].ny === players[1].ny) dead[0] = dead[1] = true;
+    players.forEach((p, i) => {
+      if (dead[i]) return;
+      p.x = p.nx;
+      p.y = p.ny;
+      grid[p.y * COLS + p.x] = i + 1;
+    });
+    if (dead[0] || dead[1]) endRound(dead);
+  }
+
+  function endRound(dead) {
+    state = "roundover";
+    messageTimer = 1.6;
+    if (dead[0] && dead[1]) {
+      message = "Double crash! No point.";
+    } else {
+      const winner = dead[0] ? 1 : 0;
+      wins[winner]++;
+      message = names()[winner] + " wins the round!";
+    }
+    hud();
+  }
+
+  function endMatch() {
+    state = "menu";
+    const winner = wins[0] > wins[1] ? 0 : 1;
+    Arcade.intro({
+      title: names()[winner] + " wins the match!",
+      how: ["Final score: " + wins[0] + " to " + wins[1]],
+      buttons: [
+        { label: "Rematch", primary: true, action: () => startMatch(mode) },
+        { label: "Change players", action: showMenu },
+        { label: "All games", action: Arcade.home },
+      ],
+    });
+  }
+
+  function update(dt) {
+    if (state === "countdown") {
+      countdown -= dt;
+      if (countdown <= 0) state = "play";
+    } else if (state === "play") {
+      acc += dt;
+      while (acc >= TICK && state === "play") {
+        acc -= TICK;
+        tick();
+      }
+    } else if (state === "roundover") {
+      messageTimer -= dt;
+      if (messageTimer <= 0) {
+        if (Math.max(...wins) >= WIN) endMatch();
+        else startRound();
+      }
+    }
+  }
+
+  function draw() {
+    ctx.fillStyle = "#03050c";
+    ctx.fillRect(0, 0, W, H);
+    const cell = Math.max(2, Math.floor(Math.min((W - 16) / COLS, (H - 16) / ROWS)));
+    const ox = Math.floor((W - cell * COLS) / 2), oy = Math.floor((H - cell * ROWS) / 2);
+
+    ctx.fillStyle = "#070b17";
+    ctx.fillRect(ox, oy, cell * COLS, cell * ROWS);
+    ctx.strokeStyle = "rgba(93, 200, 255, 0.06)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let x = 0; x <= COLS; x++) { ctx.moveTo(ox + x * cell + 0.5, oy); ctx.lineTo(ox + x * cell + 0.5, oy + ROWS * cell); }
+    for (let y = 0; y <= ROWS; y++) { ctx.moveTo(ox, oy + y * cell + 0.5); ctx.lineTo(ox + COLS * cell, oy + y * cell + 0.5); }
+    ctx.stroke();
+    ctx.strokeStyle = "#33406b";
+    ctx.lineWidth = 3;
+    ctx.strokeRect(ox - 2, oy - 2, cell * COLS + 4, cell * ROWS + 4);
+
+    for (let i = 0; i < grid.length; i++) {
+      if (!grid[i]) continue;
+      ctx.fillStyle = COLORS[grid[i] - 1];
+      ctx.globalAlpha = 0.8;
+      ctx.fillRect(ox + (i % COLS) * cell, oy + Math.floor(i / COLS) * cell, cell, cell);
+    }
+    ctx.globalAlpha = 1;
+    players.forEach((p, i) => {
+      ctx.shadowColor = COLORS[i];
+      ctx.shadowBlur = 18;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(ox + p.x * cell - 1, oy + p.y * cell - 1, cell + 2, cell + 2);
+    });
+    ctx.shadowBlur = 0;
+
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    if (state === "countdown") {
+      ctx.fillStyle = "#ffc94d";
+      ctx.font = `bold ${Math.round(Math.min(W, H) * 0.2)}px Consolas, monospace`;
+      ctx.fillText(Math.ceil(countdown), W / 2, H / 2);
+    } else if (state === "roundover") {
+      ctx.fillStyle = "#ffffff";
+      ctx.font = `bold ${Math.round(Math.min(W, H) * 0.07)}px Consolas, monospace`;
+      ctx.fillText(message, W / 2, H / 2);
+    }
+  }
+
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    update(dt);
+    draw();
+    requestAnimationFrame(frame);
+  }
+
+  window.addEventListener("keydown", (e) => {
+    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    if (k in P1_KEYS) steer(0, P1_KEYS[k]);
+    if (k in P2_KEYS) {
+      e.preventDefault();
+      steer(mode === 1 ? 0 : 1, P2_KEYS[k]);
+    }
+  });
+
+  // Swipe to steer Pink on touch screens.
+  let swipe = null;
+  canvas.addEventListener("pointerdown", (e) => { swipe = [e.clientX, e.clientY]; });
+  canvas.addEventListener("pointerup", (e) => {
+    if (!swipe) return;
+    const dx = e.clientX - swipe[0], dy = e.clientY - swipe[1];
+    swipe = null;
+    if (Math.max(Math.abs(dx), Math.abs(dy)) < 25) return;
+    steer(0, Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 1 : 3) : (dy > 0 ? 2 : 0));
+  });
+  window.addEventListener("resize", resize);
+
+  function showMenu() {
+    state = "menu";
+    Arcade.intro({
+      title: "Trail Duel",
+      how: [
+        "Your bike leaves a glowing wall behind it.",
+        "Crash into a wall or any trail and you lose the round.",
+        "Pink: W A S D (or swipe). Cyan: arrow keys.",
+        "First to " + WIN + " round wins takes the match!",
+      ],
+      buttons: [
+        { label: "1 Player vs CPU", primary: true, action: () => startMatch(1) },
+        { label: "2 Players", primary: true, action: () => startMatch(2) },
+      ],
+    });
+  }
+
+  resize();
+  hud();
+  Arcade.watchIdle();
+  requestAnimationFrame(frame);
+  showMenu();
+</script>
+</body>
+</html>

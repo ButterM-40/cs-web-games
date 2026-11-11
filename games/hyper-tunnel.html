@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hyper Tunnel</title>
+<link rel="stylesheet" href="../assets/arcade.css">
+</head>
+<body class="canvas-game" data-pad-hint="Controller: stick or D-pad left/right to spin.">
+<header class="bar">
+  <a href="../index.html">&larr; All games</a>
+  <h1>Hyper Tunnel</h1>
+  <div class="stats">
+    <div class="stat"><small>Speed</small><b id="speed">0</b></div>
+    <div class="stat"><small>Distance</small><b id="score">0</b></div>
+  </div>
+</header>
+<div class="view"><canvas id="c"></canvas></div>
+
+<script src="../assets/arcade.js"></script>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const canvas = $("c");
+  const ctx = canvas.getContext("2d");
+  const TAU = Math.PI * 2;
+  const N = 12, SEG = TAU / N;          // the tube has 12 sides
+  const R = 100, RIN = 46, SHIP_R = 78; // wall radius, obstacle inner edge, ship's orbit
+  const PZ = 60, FAR = 1900, RING = 100, DEPTH = 40, NEAR = 15;
+  const OMEGA = 4.2;                    // turn speed in radians per second
+
+  let W = 0, H = 0, F = 1, CX = 0, CY = 0;
+  let state = "intro", theta = 0, dist = 0, speed = 200, elapsed = 0, turn = 0, gates = 0, deadTimer = 0, flash = 0;
+  let obstacles = [], lastOpen = [0];
+  const keys = new Set();
+  let pointerTurn = 0;
+
+  function resize() {
+    ({ w: W, h: H } = Arcade.fitCanvas(canvas, ctx));
+    CX = W / 2;
+    CY = H / 2;
+    F = (Math.min(W, H) * 0.36 * PZ) / SHIP_R;
+  }
+
+  // World point (angle around tube, radius, depth) to screen, rotated so the ship stays at the bottom.
+  function P(a, r, z) {
+    const ang = a - theta + Math.PI / 2;
+    const k = F / z;
+    return [CX + Math.cos(ang) * r * k, CY + Math.sin(ang) * r * k];
+  }
+
+  const segOf = (a) => Math.floor((((a % TAU) + TAU) % TAU) / SEG) % N;
+  const ringDist = (a, b) => Math.min((a - b + N) % N, (b - a + N) % N);
+  const spacingNow = () => Math.max(300, 620 - elapsed * 5);
+
+  function makeObstacle(z) {
+    // Only offer gaps the ship can actually reach in time.
+    const reach = Math.max(1, Math.floor((OMEGA * (spacingNow() / speed)) / SEG));
+    const level = Math.min(1, elapsed / 70);
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const blocked = Array(N).fill(true);
+      const g = Math.floor(Math.random() * N);
+      const roll = Math.random();
+      if (roll < 0.25 && elapsed > 15) {
+        for (const k of [0, 1, 6, 7]) blocked[(g + k) % N] = false;
+      } else if (roll < 0.4 && elapsed > 25) {
+        for (let k = 0; k < N; k += 4) { blocked[(g + k) % N] = false; blocked[(g + k + 1) % N] = false; }
+      } else {
+        const width = Math.max(2, Math.round(5 - level * 3));
+        for (let k = 0; k < width; k++) blocked[(g + k) % N] = false;
+      }
+      const open = blocked.map((b, i) => (b ? -1 : i)).filter((i) => i >= 0);
+      const reachable = open.some((o) => lastOpen.some((l) => ringDist(o, l) <= reach));
+      if (reachable || attempt === 39) {
+        lastOpen = open;
+        return { z, blocked, passed: false };
+      }
+    }
+  }
+
+  function update(dt) {
+    flash = Math.max(0, flash - dt * 2);
+    if (state === "intro") {
+      dist += 200 * dt;
+      theta += 0.3 * dt;
+      return;
+    }
+    if (state === "dead") {
+      deadTimer -= dt;
+      if (deadTimer <= 0) {
+        state = "over";
+        Arcade.over({
+          game: "tunnel",
+          score: Math.floor(dist / 20),
+          headline: "Crashed!",
+          lesson: "You slipped through " + gates + " gate" + (gates === 1 ? "" : "s") + " at up to " + Math.round(speed / 10) + " km/s.",
+        });
+      }
+      return;
+    }
+    if (state !== "play") return;
+
+    elapsed += dt;
+    speed = 450 + Math.min(650, elapsed * 10);
+    dist += speed * dt;
+
+    const keyTurn = (keys.has("ArrowLeft") || keys.has("a") ? 1 : 0) - (keys.has("ArrowRight") || keys.has("d") ? 1 : 0);
+    turn = keyTurn || pointerTurn;
+    theta += turn * OMEGA * dt;
+
+    const lastZ = obstacles.length ? obstacles[obstacles.length - 1].z : -Infinity;
+    if (lastZ < FAR - spacingNow()) obstacles.push(makeObstacle(FAR));
+
+    const seg = segOf(theta);
+    for (const o of obstacles) {
+      o.z -= speed * dt;
+      if (o.z <= PZ && o.z + DEPTH >= PZ && o.blocked[seg]) {
+        state = "dead";
+        deadTimer = 1;
+        flash = 1;
+        return;
+      }
+      if (!o.passed && o.z + DEPTH < PZ) { o.passed = true; gates++; }
+    }
+    obstacles = obstacles.filter((o) => o.z + DEPTH > NEAR);
+  }
+
+  function quad(pts) {
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.closePath();
+  }
+
+  function drawObstacle(o, hue) {
+    const zf = Math.max(o.z, NEAR), zb = o.z + DEPTH;
+    const alpha = Math.min(1, (FAR - o.z) / 400);
+    ctx.globalAlpha = alpha;
+    ctx.lineWidth = 2;
+    // Inner caps and side walls first, then the front faces on top.
+    for (let i = 0; i < N; i++) {
+      if (!o.blocked[i]) continue;
+      const a0 = i * SEG, a1 = a0 + SEG;
+      ctx.fillStyle = `hsl(${hue} 70% 22%)`;
+      quad([P(a0, RIN, zf), P(a1, RIN, zf), P(a1, RIN, zb), P(a0, RIN, zb)]);
+      ctx.fill();
+      for (const [edge, neighbor] of [[a0, (i + N - 1) % N], [a1, (i + 1) % N]]) {
+        if (o.blocked[neighbor]) continue;
+        ctx.fillStyle = `hsl(${hue} 70% 30%)`;
+        quad([P(edge, R, zf), P(edge, RIN, zf), P(edge, RIN, zb), P(edge, R, zb)]);
+        ctx.fill();
+      }
+    }
+    if (o.z >= NEAR) {
+      for (let i = 0; i < N; i++) {
+        if (!o.blocked[i]) continue;
+        const a0 = i * SEG, a1 = a0 + SEG;
+        quad([P(a0, R, o.z), P(a1, R, o.z), P(a1, RIN, o.z), P(a0, RIN, o.z)]);
+        ctx.fillStyle = `hsl(${hue} 90% 50%)`;
+        ctx.fill();
+        ctx.strokeStyle = `hsl(${hue} 100% 80%)`;
+        ctx.stroke();
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawShip() {
+    const [x, y] = P(theta, SHIP_R, PZ);
+    const size = Math.min(W, H) * 0.045;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(-turn * 0.35);
+    const flame = size * (0.6 + Math.random() * 0.5);
+    ctx.fillStyle = "#ffc94d";
+    quad([[-size * 0.35, size * 0.45], [size * 0.35, size * 0.45], [0, size * 0.45 + flame]]);
+    ctx.fill();
+    ctx.shadowColor = "#5dffa0";
+    ctx.shadowBlur = 18;
+    ctx.fillStyle = "#e9fff3";
+    quad([[0, -size], [size * 1.1, size * 0.55], [0, size * 0.2], [-size * 1.1, size * 0.55]]);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function draw() {
+    const hue = (dist / 40) % 360;
+    ctx.fillStyle = "#020309";
+    ctx.fillRect(0, 0, W, H);
+
+    // Tube rings scroll toward the camera to sell the speed.
+    ctx.lineWidth = 2;
+    for (let z = RING - (dist % RING); z < FAR; z += RING) {
+      if (z < NEAR) continue;
+      ctx.strokeStyle = `hsl(${(hue + z / 15) % 360} 90% 60% / ${1 - z / FAR})`;
+      const pts = [];
+      for (let i = 0; i < N; i++) pts.push(P(i * SEG, R, z));
+      quad(pts);
+      ctx.stroke();
+    }
+    ctx.lineWidth = 1;
+    for (let i = 0; i < N; i++) {
+      const a = P(i * SEG, R, NEAR), b = P(i * SEG, R, FAR);
+      ctx.strokeStyle = `hsl(${hue} 90% 60% / 0.35)`;
+      ctx.beginPath();
+      ctx.moveTo(a[0], a[1]);
+      ctx.lineTo(b[0], b[1]);
+      ctx.stroke();
+    }
+
+    // Far gates, then the ship, then any gate the ship is inside so it covers the ship.
+    const gateHue = (hue + 180) % 360;
+    for (let i = obstacles.length - 1; i >= 0; i--) if (obstacles[i].z > PZ) drawObstacle(obstacles[i], gateHue);
+    if (state !== "dead" && state !== "over") drawShip();
+    for (let i = obstacles.length - 1; i >= 0; i--) if (obstacles[i].z <= PZ) drawObstacle(obstacles[i], gateHue);
+
+    if (flash > 0) {
+      ctx.fillStyle = `rgba(255, 93, 143, ${flash * 0.7})`;
+      ctx.fillRect(0, 0, W, H);
+    }
+  }
+
+  let shownScore = -1, shownSpeed = -1;
+  function hud() {
+    const s = Math.floor(dist / 20), v = state === "play" ? Math.round(speed / 10) : 0;
+    if (s !== shownScore && state !== "intro") { $("score").textContent = s; shownScore = s; }
+    if (v !== shownSpeed) { $("speed").textContent = v; shownSpeed = v; }
+  }
+
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min(0.033, (now - last) / 1000);
+    last = now;
+    update(dt);
+    draw();
+    hud();
+    requestAnimationFrame(frame);
+  }
+
+  function pointerSide(e) {
+    const r = canvas.getBoundingClientRect();
+    pointerTurn = e.clientX - r.left < r.width / 2 ? 1 : -1;
+  }
+  canvas.addEventListener("pointerdown", (e) => { canvas.setPointerCapture(e.pointerId); pointerSide(e); });
+  canvas.addEventListener("pointermove", (e) => { if (pointerTurn) pointerSide(e); });
+  ["pointerup", "pointercancel"].forEach((type) => canvas.addEventListener(type, () => { pointerTurn = 0; }));
+  window.addEventListener("keydown", (e) => {
+    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    keys.add(k);
+    if (k.startsWith("Arrow")) e.preventDefault();
+  });
+  window.addEventListener("keyup", (e) => keys.delete(e.key.length === 1 ? e.key.toLowerCase() : e.key));
+  window.addEventListener("resize", resize);
+
+  resize();
+  Arcade.watchIdle();
+  requestAnimationFrame(frame);
+  Arcade.intro({
+    title: "Hyper Tunnel",
+    how: [
+      "You're racing down a tunnel that keeps getting faster.",
+      "Spin around the tunnel walls to fly through the gaps.",
+      "Hold the left or right side of the screen to spin, or use the arrow keys or A/D.",
+      "One hit and you're out. How far can you go?",
+    ],
+    button: "Go!",
+    onStart() {
+      state = "play";
+      dist = 0;
+      theta = 0;
+    },
+  });
+</script>
+</body>
+</html>

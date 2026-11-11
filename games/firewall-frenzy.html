@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Firewall Frenzy</title>
+<link rel="stylesheet" href="../assets/arcade.css">
+<style>
+  html, body { height: 100%; }
+  body { display: flex; flex-direction: column; overflow: hidden; }
+  #field { position: relative; flex: 1; overflow: hidden; }
+  #server {
+    position: absolute; left: 0; right: 0; bottom: 0; height: 46px; display: flex; align-items: center; justify-content: center;
+    color: var(--blue); background: var(--panel); border-top: 4px solid var(--blue); font-weight: 700; letter-spacing: .2em;
+  }
+  #server.hit { background: var(--pink); color: #2b0612; border-color: var(--pink); }
+  .packet {
+    position: absolute; top: 0; left: 0; max-width: 46vw; padding: 14px 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    color: var(--text); background: var(--panel-2); border: 2px solid var(--blue); border-radius: 8px; will-change: transform;
+  }
+  .packet:hover { border-color: var(--blue); }
+  #flash { position: absolute; top: 14px; left: 0; right: 0; text-align: center; color: var(--amber); font-size: 20px; padding: 0 16px; pointer-events: none; }
+</style>
+</head>
+<body data-pad-hint="Controller: D-pad or stick to pick, A to press. Keyboard: arrow keys and Enter.">
+<header class="bar">
+  <a href="../index.html">&larr; All games</a>
+  <h1>Firewall Frenzy</h1>
+  <div class="stats">
+    <div class="stat"><small>Lives</small><b id="lives">3</b></div>
+    <div class="stat"><small>Score</small><b id="score">0</b></div>
+  </div>
+</header>
+<div id="field">
+  <div id="flash" aria-live="polite"></div>
+  <div id="server">YOUR SERVER</div>
+</div>
+
+<script src="../assets/arcade.js"></script>
+<script>
+  const SAFE = [
+    "essay_final.docx", "selfie.png", "lecture_04.mp4", "notes.pdf", "grades.csv", "hello.txt",
+    "lunch_menu.pdf", "playlist.mp3", "resume.pdf", "photo_album.zip", "homework3.py", "index.html",
+  ];
+  const ATTACKS = [
+    ["free_game_coins.exe", "Too good to be true? Free stuff in a program file is classic malware bait."],
+    ["invoice.pdf.exe", "A double extension hides a program pretending to be a document."],
+    ["' OR 1=1 --", "That is SQL injection: it tricks a database into skipping the password check."],
+    ["<script>steal()<\/script>", "That is cross-site scripting: attacker code hidden in a web page."],
+    ["you_won_a_phone.scr", "A .scr file is a program, and surprise prizes are a phishing favorite."],
+    ["stolen_passwords.zip", "Leaked password lists fuel account takeovers. Use a password manager!"],
+    ["bank-l0gin.net", "Look closely: a zero instead of an o. That's a fake lookalike website."],
+    ["rm -rf /", "That Linux command tries to delete every file on the computer."],
+    ["urgent_click_now.bat", "Urgency is a scammer's best tool, and .bat files run commands."],
+  ];
+
+  const field = document.getElementById("field");
+  const server = document.getElementById("server");
+  const flash = document.getElementById("flash");
+  const packets = new Set();
+  let lives = 3, score = 0, zapped = 0, running = false;
+  let last = 0, sinceSpawn = 0, elapsed = 0;
+
+  function say(text) { flash.textContent = text; }
+
+  function updateHud() {
+    document.getElementById("lives").textContent = lives;
+    document.getElementById("score").textContent = score;
+  }
+
+  function loseLife(reason) {
+    lives--;
+    say(reason);
+    server.classList.add("hit");
+    setTimeout(() => server.classList.remove("hit"), 200);
+    updateHud();
+    if (lives <= 0) finish();
+  }
+
+  function removePacket(p) {
+    packets.delete(p);
+    p.node.remove();
+  }
+
+  function spawn() {
+    const attack = Math.random() < 0.5;
+    const pick = attack
+      ? ATTACKS[Math.floor(Math.random() * ATTACKS.length)]
+      : [SAFE[Math.floor(Math.random() * SAFE.length)], ""];
+    const node = Arcade.el("button", { className: "packet", type: "button", textContent: pick[0] });
+    field.append(node);
+    const room = Math.max(0, field.clientWidth - node.offsetWidth);
+    const p = { node, attack, why: pick[1], name: pick[0], x: Math.random() * room, y: -node.offsetHeight };
+    node.style.transform = `translate(${p.x}px, ${p.y}px)`;
+    node.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      zap(p);
+    });
+    // Keyboard Enter/Space and controller A arrive as clicks.
+    node.addEventListener("click", () => zap(p));
+    packets.add(p);
+  }
+
+  function zap(p) {
+    if (!running || !packets.has(p)) return;
+    removePacket(p);
+    if (p.attack) {
+      score += 10;
+      zapped++;
+      say("Blocked! " + p.why);
+      updateHud();
+    } else {
+      loseLife(p.name + " was safe! You blocked a real user's file.");
+    }
+  }
+
+  function frame(now) {
+    if (!running) return;
+    const dt = Math.min(50, now - last);
+    last = now;
+    elapsed += dt;
+    sinceSpawn += dt;
+
+    // Difficulty ramps for about 90 seconds, then holds.
+    const ramp = Math.min(1, elapsed / 90000);
+    const speed = 70 + ramp * 150;
+    const gap = 1200 - ramp * 750;
+    if (sinceSpawn >= gap) {
+      sinceSpawn = 0;
+      spawn();
+    }
+
+    const floor = field.clientHeight - server.offsetHeight;
+    for (const p of [...packets]) {
+      p.y += (speed * dt) / 1000;
+      p.node.style.transform = `translate(${p.x}px, ${p.y}px)`;
+      if (p.y + p.node.offsetHeight < floor) continue;
+      removePacket(p);
+      if (p.attack) {
+        loseLife(p.name + " got through! " + p.why);
+        if (!running) return;
+      } else {
+        score += 2;
+        updateHud();
+      }
+    }
+    requestAnimationFrame(frame);
+  }
+
+  function finish() {
+    running = false;
+    Arcade.over({
+      game: "firewall",
+      score,
+      headline: "Server breached!",
+      lesson: "You stopped " + zapped + " attack" + (zapped === 1 ? "" : "s") +
+        ". Cybersecurity teams write the software that makes these calls millions of times a day.",
+    });
+  }
+
+  Arcade.watchIdle();
+  Arcade.intro({
+    title: "Firewall Frenzy",
+    how: [
+      "Files and web traffic are falling toward your server.",
+      "Tap anything dangerous before it lands (or pick it with the arrow keys / D-pad and press Enter / A).",
+      "Leave safe files alone. Blocking one costs a life!",
+      "You have 3 lives, and it keeps speeding up.",
+    ],
+    onStart() {
+      running = true;
+      last = performance.now();
+      sinceSpawn = 1200;
+      requestAnimationFrame(frame);
+    },
+  });
+</script>
+</body>
+</html>

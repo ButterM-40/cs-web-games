@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cloud Hopper</title>
+<link rel="stylesheet" href="../assets/arcade.css">
+</head>
+<body class="canvas-game" data-pad-hint="Controller: stick or D-pad to steer.">
+<header class="bar">
+  <a href="../index.html">&larr; All games</a>
+  <h1>Cloud Hopper</h1>
+  <div class="stats">
+    <div class="stat"><small>Height</small><b id="score">0</b></div>
+  </div>
+</header>
+<div class="view"><canvas id="c"></canvas></div>
+
+<script src="../assets/arcade.js"></script>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const canvas = $("c");
+  const ctx = canvas.getContext("2d");
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+  // A 480x720 portrait column, scaled to fit and centered.
+  const LW = 480, LH = 720, PW = 34, GRAVITY = 1500, JUMP = -820, SPRING = -1350, START_Y = 640;
+  let W = 0, H = 0, S = 1, OX = 0, OY = 0;
+  let state = "intro", camY = 0, best = 0, deadTimer = 0, squash = 0;
+  let player = { x: LW / 2, y: START_Y, vy: JUMP, face: 1 };
+  let plats = [], topY = START_Y;
+  let pointer = { active: false, x: LW / 2 };
+  const keys = new Set();
+  const stars = Array.from({ length: 70 }, () => [Math.random() * LW, Math.random() * LH, Math.random() * 1.5 + 0.6]);
+
+  function resize() {
+    ({ w: W, h: H } = Arcade.fitCanvas(canvas, ctx));
+    S = Math.min(W / LW, H / LH);
+    OX = (W - LW * S) / 2;
+    OY = (H - LH * S) / 2;
+  }
+
+  function addPlatforms() {
+    while (topY > camY - 200) {
+      const climbed = START_Y - topY;
+      const gap = rand(70, Math.min(185, 100 + climbed / 120));
+      const prevY = topY;
+      topY -= gap;
+      const moving = Math.random() < Math.min(0.35, climbed / 20000);
+      const w = moving ? 64 : 72;
+      plats.push({
+        x: rand(0, LW - w), y: topY, w, type: moving ? "move" : "solid",
+        vx: moving ? rand(60, 120) * (Math.random() < 0.5 ? -1 : 1) : 0,
+        spring: !moving && Math.random() < 0.07,
+      });
+      // Crumbly clouds are extras; the reachable chain never depends on them.
+      if (Math.random() < Math.min(0.3, 0.08 + climbed / 30000)) {
+        plats.push({ x: rand(0, LW - 72), y: (prevY + topY) / 2, w: 72, type: "crumble", vx: 0, fall: 0 });
+      }
+    }
+  }
+
+  function reset() {
+    camY = 0;
+    best = 0;
+    topY = START_Y;
+    player = { x: LW / 2, y: START_Y, vy: JUMP, face: 1 };
+    plats = [{ x: LW / 2 - 45, y: START_Y, w: 90, type: "solid", vx: 0 }];
+    addPlatforms();
+  }
+
+  function update(dt) {
+    squash = Math.max(0, squash - dt * 4);
+    if (state === "dead") {
+      deadTimer -= dt;
+      if (deadTimer <= 0) {
+        state = "over";
+        Arcade.over({ game: "hopper", score: best, headline: "You fell!", lesson: "Highest point: " + best + " m." });
+      }
+    }
+    if (state === "over") return;
+
+    let dir = 0;
+    if (state === "play") {
+      dir = (keys.has("ArrowRight") || keys.has("d") ? 1 : 0) - (keys.has("ArrowLeft") || keys.has("a") ? 1 : 0);
+      if (dir) pointer.active = false;
+      else if (pointer.active) dir = clamp((pointer.x - player.x) / 40, -1, 1);
+    }
+    if (dir) player.face = Math.sign(dir);
+    player.x += dir * 380 * dt;
+    if (player.x < -PW / 2) player.x += LW + PW;
+    if (player.x > LW + PW / 2) player.x -= LW + PW;
+
+    const prevFeet = player.y;
+    player.vy += GRAVITY * dt;
+    player.y += player.vy * dt;
+
+    for (const p of plats) {
+      if (p.type === "move") {
+        p.x += p.vx * dt;
+        if (p.x < 0 || p.x > LW - p.w) { p.vx = -p.vx; p.x = clamp(p.x, 0, LW - p.w); }
+      }
+      if (p.fall) p.y += 420 * dt;
+    }
+
+    if (player.vy > 0) {
+      for (const p of plats) {
+        if (p.fall || prevFeet > p.y || player.y < p.y) continue;
+        if (player.x + PW * 0.4 < p.x || player.x - PW * 0.4 > p.x + p.w) continue;
+        if (p.type === "crumble") { p.fall = 1; continue; }
+        player.y = p.y;
+        player.vy = p.spring ? SPRING : JUMP;
+        squash = 1;
+        break;
+      }
+    }
+
+    camY = Math.min(camY, player.y - LH * 0.45);
+    best = Math.max(best, Math.floor((START_Y - player.y) / 10));
+    addPlatforms();
+    plats = plats.filter((p) => p.y < camY + LH + 60);
+
+    if (state === "play" && player.y - 40 > camY + LH) {
+      state = "dead";
+      deadTimer = 0.6;
+    }
+    // Before the game starts the hopper just bounces on the first cloud.
+    if (state === "intro" && player.y > START_Y) { player.y = START_Y; player.vy = JUMP; }
+  }
+
+  function cloud(p) {
+    const y = p.y - camY;
+    const colors = { solid: "#ffffff", move: "#bfe6ff", crumble: "#9aa3b8" };
+    ctx.globalAlpha = p.fall ? 0.5 : 1;
+    ctx.fillStyle = colors[p.type];
+    ctx.beginPath();
+    ctx.roundRect(p.x, y, p.w, 14, 7);
+    ctx.arc(p.x + p.w * 0.3, y + 2, 10, 0, Math.PI * 2);
+    ctx.arc(p.x + p.w * 0.62, y, 13, 0, Math.PI * 2);
+    ctx.fill();
+    if (p.type === "crumble") {
+      ctx.strokeStyle = "#4b5368";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(p.x + p.w * 0.45, y - 8);
+      ctx.lineTo(p.x + p.w * 0.52, y + 3);
+      ctx.lineTo(p.x + p.w * 0.44, y + 14);
+      ctx.stroke();
+    }
+    if (p.spring) {
+      ctx.strokeStyle = "#ffc94d";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      const sx = p.x + p.w / 2;
+      for (let i = 0; i <= 4; i++) ctx.lineTo(sx + (i % 2 ? 7 : -7), y - 4 - i * 4);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawPlayer() {
+    const y = player.y - camY;
+    const stretch = player.vy < 0 ? 1 + Math.min(0.25, -player.vy / 3500) : 1;
+    const sq = 1 - squash * 0.3;
+    const w = PW * (2 - stretch) / sq * 0.5 + PW * 0.5, h = PW * stretch * sq;
+    for (const ox of [0, -LW, LW]) {
+      const x = player.x + ox;
+      if (x < -PW || x > LW + PW) continue;
+      ctx.fillStyle = "#5dffa0";
+      ctx.beginPath();
+      ctx.ellipse(x, y - h / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
+      ctx.fill();
+      const ex = x + player.face * 6;
+      ctx.fillStyle = "#ffffff";
+      for (const dx of [-6, 6]) { ctx.beginPath(); ctx.arc(ex + dx, y - h * 0.6, 5, 0, Math.PI * 2); ctx.fill(); }
+      ctx.fillStyle = "#06281a";
+      for (const dx of [-6, 6]) { ctx.beginPath(); ctx.arc(ex + dx + player.face * 2, y - h * 0.6, 2.5, 0, Math.PI * 2); ctx.fill(); }
+    }
+  }
+
+  const mix = (a, b, t) => a.map((v, i) => Math.round(v + (b[i] - v) * t));
+
+  function draw() {
+    ctx.fillStyle = "#03050c";
+    ctx.fillRect(0, 0, W, H);
+    ctx.save();
+    ctx.translate(OX, OY);
+    ctx.scale(S, S);
+    ctx.beginPath();
+    ctx.rect(0, 0, LW, LH);
+    ctx.clip();
+
+    const t = clamp(best / 1500, 0, 1);
+    const sky = ctx.createLinearGradient(0, 0, 0, LH);
+    sky.addColorStop(0, `rgb(${t < 0.5 ? mix([90, 170, 255], [255, 120, 140], t * 2) : mix([255, 120, 140], [10, 10, 40], t * 2 - 1)})`);
+    sky.addColorStop(1, `rgb(${t < 0.5 ? mix([200, 235, 255], [255, 200, 150], t * 2) : mix([255, 200, 150], [40, 20, 80], t * 2 - 1)})`);
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, LW, LH);
+    if (t > 0.6) {
+      ctx.fillStyle = `rgba(255, 255, 255, ${(t - 0.6) * 2.5})`;
+      for (const [x, y, r] of stars) ctx.fillRect(x, (y - camY * 0.1) % LH, r, r);
+    }
+
+    plats.forEach(cloud);
+    if (state !== "over" || player.y - camY < LH) drawPlayer();
+
+    if (state !== "intro") {
+      ctx.textAlign = "center";
+      ctx.fillStyle = t > 0.6 ? "#ffffff" : "rgba(20, 30, 60, 0.75)";
+      ctx.font = "bold 56px Consolas, monospace";
+      ctx.fillText(best + " m", LW / 2, 70);
+    }
+    ctx.restore();
+  }
+
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min(0.033, (now - last) / 1000);
+    last = now;
+    update(dt);
+    draw();
+    $("score").textContent = best;
+    requestAnimationFrame(frame);
+  }
+
+  const toField = (e) => {
+    const r = canvas.getBoundingClientRect();
+    return (e.clientX - r.left - OX) / S;
+  };
+  canvas.addEventListener("pointermove", (e) => {
+    if (e.pointerType === "mouse" || e.buttons) { pointer.active = true; pointer.x = toField(e); }
+  });
+  canvas.addEventListener("pointerdown", (e) => {
+    canvas.setPointerCapture(e.pointerId);
+    pointer.active = true;
+    pointer.x = toField(e);
+  });
+  ["pointerup", "pointercancel"].forEach((t) => canvas.addEventListener(t, (e) => {
+    if (e.pointerType !== "mouse") pointer.active = false;
+  }));
+  window.addEventListener("keydown", (e) => {
+    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    keys.add(k);
+    if (k.startsWith("Arrow")) e.preventDefault();
+  });
+  window.addEventListener("keyup", (e) => keys.delete(e.key.length === 1 ? e.key.toLowerCase() : e.key));
+  window.addEventListener("resize", resize);
+
+  resize();
+  reset();
+  Arcade.watchIdle();
+  requestAnimationFrame(frame);
+  Arcade.intro({
+    title: "Cloud Hopper",
+    how: [
+      "Your hopper bounces automatically. Steer it up through the clouds!",
+      "Move with the mouse, by holding a finger on the screen, or with the arrow keys.",
+      "Gray clouds crumble. Yellow springs launch you high.",
+      "Go off one side to come back on the other. Don't fall!",
+    ],
+    button: "Hop!",
+    onStart() {
+      reset();
+      pointer.active = false;
+      state = "play";
+    },
+  });
+</script>
+</body>
+</html>

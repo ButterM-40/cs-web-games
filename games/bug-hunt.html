@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bug Hunt</title>
+<link rel="stylesheet" href="../assets/arcade.css">
+<style>
+  #goal { margin: 0 0 14px; font-size: 22px; color: var(--amber); }
+  #code { display: flex; flex-direction: column; gap: 4px; padding: 12px; background: #070b17; border: 2px solid var(--line); border-radius: 10px; }
+  .line {
+    display: flex; gap: 16px; width: 100%; min-height: 42px; padding: 6px 10px; text-align: left; white-space: pre-wrap;
+    background: none; border: 2px solid transparent; border-radius: 6px; font-size: clamp(15px, 2.6vw, 21px);
+  }
+  .line:hover { background: var(--panel-2); border-color: var(--amber); }
+  .line .num { flex: none; width: 2ch; color: var(--muted); text-align: right; }
+  .line.wrong { background: #4a1729; border-color: var(--pink); }
+  .line.right { background: #123f2b; border-color: var(--green); }
+  #result { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; min-height: 70px; margin-top: 14px; }
+  #why { flex: 1 1 300px; margin: 0; }
+</style>
+</head>
+<body data-pad-hint="Controller: D-pad or stick to pick, A to press. Keyboard: arrow keys and Enter.">
+<header class="bar">
+  <a href="../index.html">&larr; All games</a>
+  <h1>Bug Hunt</h1>
+  <div class="stats">
+    <div class="stat"><small>Streak</small><b id="streak">0</b></div>
+    <div class="stat" id="timeStat"><small>Time</small><b id="time">75</b></div>
+    <div class="stat"><small>Score</small><b id="score">0</b></div>
+  </div>
+</header>
+
+<div class="stage">
+  <p id="goal"></p>
+  <div id="code"></div>
+  <div id="result">
+    <p id="why" aria-live="polite"></p>
+    <button id="next" class="primary" hidden>Next bug</button>
+  </div>
+</div>
+
+<script src="../assets/arcade.js"></script>
+<script>
+  // `bug` is the zero-based line (or lines) that count as the correct answer.
+  const PUZZLES = [
+    { goal: "Add up the numbers, then find the average.", bug: 3, why: "It replaces total each time. It should be total += n.",
+      code: ["def average(nums):", "    total = 0", "    for n in nums:", "        total = n", "    return total / len(nums)"] },
+    { goal: "Count down from 5 to 1.", bug: 3, why: "n keeps growing, so the loop never ends. It should be n = n - 1.",
+      code: ["n = 5", "while n > 0:", "    print(n)", "    n = n + 1"] },
+    { goal: "Tell whether a number is even.", bug: 1, why: "Even numbers leave remainder 0 when divided by 2, not 1.",
+      code: ["def is_even(n):", "    return n % 2 == 1", "", "print(is_even(4))"] },
+    { goal: "Print the last name in the list.", bug: 1, why: "Counting starts at 0, so the last index is len(names) - 1.",
+      code: ['names = ["Ana", "Ben", "Cy"]', "last = names[len(names)]", "print(last)"] },
+    { goal: "Find the biggest number in the list.", bug: 3, why: "The < sign finds the smallest number. It should be >.",
+      code: ["def biggest(nums):", "    best = nums[0]", "    for n in nums:", "        if n < best:", "            best = n", "    return best"] },
+    { goal: "Print A! if the score is exactly 90.", bug: 1, why: "A single = assigns a value. Comparing needs ==.",
+      code: ["score = 90", "if score = 90:", '    print("A!")'] },
+    { goal: "Print a sentence containing your age.", bug: 1, why: "Text and numbers can't be joined directly. Use str(age).",
+      code: ["age = 19", 'message = "I am " + age', "print(message)"] },
+    { goal: "Compute 5 factorial (5 x 4 x 3 x 2 x 1).", bug: 1, why: "Recursion needs a stopping point, like: if n <= 1: return 1.",
+      code: ["def fact(n):", "    return n * fact(n - 1)", "", "print(fact(5))"] },
+    { goal: "Add the numbers 1 through 10.", bug: 1, why: "range stops before its end, so this misses 10. Use range(1, 11).",
+      code: ["total = 0", "for i in range(1, 10):", "    total += i", "print(total)"] },
+    { goal: "Print the price after a 20% discount.", bug: 2, why: "This computes the discount itself. The price is price * (1 - discount).",
+      code: ["price = 50", "discount = 0.20", "final = price * discount", "print(final)"] },
+    { goal: "Swap the values of a and b.", bug: [2, 3], why: "The first value is overwritten and lost. Save it in a temporary variable first.",
+      code: ["a = 1", "b = 2", "a = b", "b = a", "print(a, b)"] },
+    { goal: "Binary search: find target in a sorted list.", bug: [5, 6, 8], why: "The search goes the wrong way. If the middle is too small, look to the right.",
+      code: ["def find(items, target):", "    low, high = 0, len(items) - 1", "    while low <= high:", "        mid = (low + high) // 2", "        if items[mid] == target: return mid", "        if items[mid] < target:", "            high = mid - 1", "        else:", "            low = mid + 1", "    return -1"] },
+    { goal: "Check whether any number in the list is negative.", bug: 4, why: "It gives up after one number. return False belongs after the loop.",
+      code: ["def has_negative(nums):", "    for n in nums:", "        if n < 0:", "            return True", "        return False"] },
+    { goal: "Print match if the word is hello, in any capitals.", bug: 1, why: "Lowercased text can never equal uppercase HELLO. Compare with \"hello\".",
+      code: ['word = "Hello"', 'if word.lower() == "HELLO":', '    print("match")'] },
+    { goal: "Return True for anyone age 18 or older.", bug: 1, why: "An off-by-one error: > leaves out 18 exactly. It should be >=.",
+      code: ["def is_adult(age):", "    if age > 18:", "        return True", "    return False"] },
+    { goal: "Double a number, then add 1 to the answer.", bug: [1, 2], why: "The function never sends back its result. It needs return result.",
+      code: ["def double(x):", "    result = x * 2", "", "answer = double(4)", "print(answer + 1)"] },
+  ];
+
+  const $ = (id) => document.getElementById(id);
+  let deck = [], current = null;
+  let score = 0, streak = 0, found = 0, timeLeft = 75000, running = false, last = 0, autoNext = 0;
+
+  function hud() {
+    $("score").textContent = score;
+    $("streak").textContent = streak;
+    $("time").textContent = Math.ceil(timeLeft / 1000);
+    $("timeStat").classList.toggle("warn", timeLeft < 15000);
+  }
+
+  function deal() {
+    clearTimeout(autoNext);
+    if (!deck.length) deck = Arcade.shuffle(PUZZLES);
+    current = deck.pop();
+    $("goal").textContent = "Goal: " + current.goal;
+    $("why").textContent = "Tap the line with the bug.";
+    $("next").hidden = true;
+    $("code").replaceChildren(...current.code.map((text, i) => {
+      const line = Arcade.el("button", { className: "line", type: "button" }, [
+        Arcade.el("span", { className: "num", textContent: i + 1 }),
+        Arcade.el("span", { textContent: text }),
+      ]);
+      line.addEventListener("click", () => choose(i, line));
+      return line;
+    }));
+    running = true;
+    last = performance.now();
+  }
+
+  function choose(i, line) {
+    if (!running) return;
+    if ([].concat(current.bug).includes(i)) {
+      running = false;
+      line.classList.add("right");
+      found++;
+      streak++;
+      score += 100 + (streak - 1) * 25;
+      $("why").textContent = "Found it! " + current.why;
+      $("next").hidden = false;
+      $("next").focus();
+      autoNext = setTimeout(deal, 5000);
+    } else {
+      streak = 0;
+      timeLeft = Math.max(0, timeLeft - 4000);
+      line.classList.add("wrong", "shake");
+      $("why").textContent = "That line is fine. Minus 4 seconds!";
+    }
+    hud();
+  }
+
+  function tick(now) {
+    if (running) {
+      timeLeft = Math.max(0, timeLeft - (now - last));
+      last = now;
+      hud();
+      if (timeLeft <= 0) {
+        running = false;
+        Arcade.over({
+          game: "bugs",
+          score,
+          headline: found + " bug" + (found === 1 ? "" : "s") + " squashed",
+          lesson: "Professional programmers spend a huge part of their day doing exactly this. You just tried it!",
+        });
+        return;
+      }
+    }
+    requestAnimationFrame(tick);
+  }
+
+  $("next").addEventListener("click", deal);
+  Arcade.watchIdle();
+  Arcade.intro({
+    title: "Bug Hunt",
+    how: [
+      "Each short program is supposed to do the goal shown on top.",
+      "Each one has a bug. Tap the line that is wrong.",
+      "Streaks earn bonus points. Wrong taps cost 4 seconds.",
+      "The clock pauses while you read the explanation.",
+    ],
+    onStart() {
+      deal();
+      requestAnimationFrame(tick);
+    },
+  });
+</script>
+</body>
+</html>

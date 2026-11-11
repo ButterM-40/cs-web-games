@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cave Glider</title>
+<link rel="stylesheet" href="../assets/arcade.css">
+</head>
+<body class="canvas-game" data-pad-hint="Controller: hold A or up to fly.">
+<header class="bar">
+  <a href="../index.html">&larr; All games</a>
+  <h1>Cave Glider</h1>
+  <div class="stats">
+    <div class="stat"><small>Orbs</small><b id="orbs">0</b></div>
+    <div class="stat"><small>Score</small><b id="score">0</b></div>
+  </div>
+</header>
+<div class="view"><canvas id="c"></canvas></div>
+
+<script src="../assets/arcade.js"></script>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const canvas = $("c");
+  const ctx = canvas.getContext("2d");
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+  // The world is 600 units tall; its visible width depends on the window shape.
+  const LH = 600, STEP = 20, SHIP_X = 170, SHIP_R = 9;
+  let W = 0, H = 0, S = 1, LW = 800;
+  let state = "intro", camX = 0, speed = 120, held = false, deadTimer = 0;
+  let ship = { y: 300, vy: 0 }, cols = [], pillars = [], orbs = [], parts = [], trail = [];
+  let center = 300, drift = 0, nextColX = 0, nextPillar = 1100, nextOrb = 700, orbCount = 0;
+  const shipWorldX = () => camX + SHIP_X;
+
+  function resize() {
+    ({ w: W, h: H } = Arcade.fitCanvas(canvas, ctx));
+    S = H / LH;
+    LW = W / S;
+  }
+
+  function gapAt(x) { return Math.max(200, 420 - x / 60); }
+
+  function addColumn() {
+    const x = nextColX;
+    const gap = gapAt(x);
+    if (x > 700) {
+      drift = clamp(drift + rand(-6, 6), -14, 14);
+      center += drift;
+      const lo = gap / 2 + 20, hi = LH - gap / 2 - 20;
+      if (center < lo || center > hi) { center = clamp(center, lo, hi); drift = -drift; }
+    }
+    const top = center - gap / 2, bot = center + gap / 2;
+    cols.push({ x, top, bot });
+
+    if (x >= nextPillar) {
+      // Stalactites and stalagmites always leave over half the passage open.
+      const fromTop = Math.random() < 0.5, len = gap * rand(0.3, 0.45);
+      pillars.push(fromTop ? { x, w: 34, y0: top - 60, y1: top + len } : { x, w: 34, y0: bot - len, y1: bot + 60 });
+      nextPillar = x + Math.max(380, rand(520, 820) - x / 80);
+    }
+    if (x >= nextOrb) {
+      if (!pillars.some((p) => Math.abs(p.x - x) < 110)) orbs.push({ x, y: center + rand(-gap * 0.25, gap * 0.25) });
+      nextOrb = x + rand(300, 600);
+    }
+    nextColX += STEP;
+  }
+
+  function caveAt(x) {
+    const k = clamp(Math.floor((x - cols[0].x) / STEP), 0, cols.length - 2);
+    const a = cols[k], b = cols[k + 1], t = clamp((x - a.x) / STEP, 0, 1);
+    return [a.top + (b.top - a.top) * t, a.bot + (b.bot - a.bot) * t];
+  }
+
+  function reset() {
+    camX = 0; nextColX = 0; center = 300; drift = 0; nextPillar = 1100; nextOrb = 700; orbCount = 0;
+    cols = []; pillars = []; orbs = []; parts = []; trail = [];
+    ship = { y: 300, vy: 0 };
+    while (nextColX <= LW + STEP * 2) addColumn();
+  }
+
+  function crash() {
+    state = "dead";
+    deadTimer = 1.2;
+    for (let i = 0; i < 40; i++) {
+      const life = rand(0.4, 1);
+      parts.push({ x: shipWorldX(), y: ship.y, vx: rand(-300, 300), vy: rand(-300, 300), life, max: life });
+    }
+  }
+
+  const score = () => Math.floor(camX / 10) + orbCount * 25;
+
+  function update(dt) {
+    for (const p of parts) { p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; }
+    parts = parts.filter((p) => p.life > 0);
+    if (state === "dead") {
+      deadTimer -= dt;
+      if (deadTimer <= 0) {
+        state = "over";
+        Arcade.over({
+          game: "glider",
+          score: score(),
+          headline: "Crashed!",
+          lesson: "You glided " + Math.floor(camX / 10) + " m and grabbed " + orbCount + " orb" + (orbCount === 1 ? "" : "s") + ".",
+        });
+      }
+      return;
+    }
+    if (state === "over") return;
+
+    if (state === "intro") {
+      camX += 120 * dt;
+      const [top, bot] = caveAt(shipWorldX());
+      ship.y = (top + bot) / 2 + Math.sin(camX / 60) * 30;
+    } else {
+      speed = Math.min(520, 260 + camX / 60);
+      camX += speed * dt;
+      ship.vy = clamp(ship.vy + (held ? -1500 : 1100) * dt, -480, 520);
+      ship.y += ship.vy * dt;
+
+      const sx = shipWorldX();
+      for (const x of [sx - SHIP_R, sx, sx + SHIP_R]) {
+        const [top, bot] = caveAt(x);
+        if (ship.y - SHIP_R < top || ship.y + SHIP_R > bot) return crash();
+      }
+      for (const p of pillars) {
+        const cx = clamp(sx, p.x, p.x + p.w), cy = clamp(ship.y, p.y0, p.y1);
+        if ((sx - cx) ** 2 + (ship.y - cy) ** 2 < SHIP_R * SHIP_R) return crash();
+      }
+      orbs = orbs.filter((o) => {
+        if (Math.hypot(o.x - sx, o.y - ship.y) > 24) return true;
+        orbCount++;
+        return false;
+      });
+    }
+
+    trail.push([shipWorldX(), ship.y]);
+    if (trail.length > 40) trail.shift();
+    while (nextColX <= camX + LW + STEP * 2) addColumn();
+    while (cols.length > 2 && cols[1].x < camX - STEP) cols.shift();
+    pillars = pillars.filter((p) => p.x + p.w > camX - 50);
+    orbs = orbs.filter((o) => o.x > camX - 50);
+  }
+
+  function draw() {
+    const hue = (200 + camX / 25) % 360;
+    ctx.save();
+    ctx.scale(S, S);
+    const bg = ctx.createLinearGradient(0, 0, 0, LH);
+    bg.addColorStop(0, `hsl(${hue} 50% 10%)`);
+    bg.addColorStop(1, `hsl(${(hue + 40) % 360} 50% 6%)`);
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, LW, LH);
+
+    for (const edge of ["top", "bot"]) {
+      ctx.beginPath();
+      ctx.moveTo(cols[0].x - camX, edge === "top" ? -10 : LH + 10);
+      for (const c of cols) ctx.lineTo(c.x - camX, c[edge]);
+      ctx.lineTo(cols[cols.length - 1].x - camX, edge === "top" ? -10 : LH + 10);
+      ctx.closePath();
+      ctx.fillStyle = `hsl(${hue} 35% 16%)`;
+      ctx.fill();
+      ctx.beginPath();
+      cols.forEach((c, i) => (i ? ctx.lineTo(c.x - camX, c[edge]) : ctx.moveTo(c.x - camX, c[edge])));
+      ctx.strokeStyle = `hsl(${hue} 90% 60%)`;
+      ctx.lineWidth = 3;
+      ctx.stroke();
+    }
+
+    for (const p of pillars) {
+      ctx.fillStyle = `hsl(${hue} 35% 16%)`;
+      ctx.fillRect(p.x - camX, p.y0, p.w, p.y1 - p.y0);
+      ctx.strokeStyle = `hsl(${(hue + 150) % 360} 90% 60%)`;
+      ctx.lineWidth = 3;
+      ctx.strokeRect(p.x - camX, p.y0, p.w, p.y1 - p.y0);
+    }
+
+    const pulse = 1 + Math.sin(performance.now() / 150) * 0.15;
+    ctx.shadowColor = "#ffc94d";
+    ctx.shadowBlur = 14;
+    ctx.fillStyle = "#ffc94d";
+    for (const o of orbs) {
+      ctx.beginPath();
+      ctx.arc(o.x - camX, o.y, 8 * pulse, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.shadowBlur = 0;
+
+    if (trail.length > 1) {
+      for (let i = 1; i < trail.length; i++) {
+        ctx.strokeStyle = `rgba(93, 255, 160, ${i / trail.length * 0.6})`;
+        ctx.lineWidth = (i / trail.length) * 6;
+        ctx.beginPath();
+        ctx.moveTo(trail[i - 1][0] - camX, trail[i - 1][1]);
+        ctx.lineTo(trail[i][0] - camX, trail[i][1]);
+        ctx.stroke();
+      }
+    }
+
+    if (state === "play" || state === "intro") {
+      ctx.save();
+      ctx.translate(SHIP_X, ship.y);
+      ctx.rotate(clamp(ship.vy / 700, -0.6, 0.6));
+      ctx.shadowColor = "#5dffa0";
+      ctx.shadowBlur = 16;
+      ctx.fillStyle = "#e9fff3";
+      ctx.beginPath();
+      ctx.moveTo(16, 0);
+      ctx.lineTo(-12, -10);
+      ctx.lineTo(-6, 0);
+      ctx.lineTo(-12, 10);
+      ctx.closePath();
+      ctx.fill();
+      if (held && state === "play") {
+        ctx.fillStyle = "#ffc94d";
+        ctx.beginPath();
+        ctx.moveTo(-8, 0);
+        ctx.lineTo(-18 - Math.random() * 10, -4);
+        ctx.lineTo(-18 - Math.random() * 10, 4);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    for (const p of parts) {
+      ctx.globalAlpha = p.life / p.max;
+      ctx.fillStyle = "#5dffa0";
+      ctx.fillRect(p.x - camX - 2, p.y - 2, 4, 4);
+    }
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
+
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min(0.033, (now - last) / 1000);
+    last = now;
+    update(dt);
+    draw();
+    $("orbs").textContent = orbCount;
+    $("score").textContent = state === "intro" ? 0 : score();
+    requestAnimationFrame(frame);
+  }
+
+  canvas.addEventListener("pointerdown", (e) => { canvas.setPointerCapture(e.pointerId); held = true; });
+  ["pointerup", "pointercancel"].forEach((t) => canvas.addEventListener(t, () => { held = false; }));
+  const THRUST_KEYS = [" ", "ArrowUp", "w", "W"];
+  window.addEventListener("keydown", (e) => {
+    if (!THRUST_KEYS.includes(e.key) || state !== "play") return;
+    e.preventDefault();
+    held = true;
+  });
+  window.addEventListener("keyup", (e) => { if (THRUST_KEYS.includes(e.key)) held = false; });
+  window.addEventListener("resize", resize);
+
+  resize();
+  reset();
+  Arcade.watchIdle();
+  requestAnimationFrame(frame);
+  Arcade.intro({
+    title: "Cave Glider",
+    how: [
+      "Hold to fly up. Let go to drop.",
+      "Use the mouse button, your finger, or the space bar.",
+      "Don't touch the cave walls or the rock spikes.",
+      "Grab the gold orbs for +25. The cave gets faster and tighter!",
+    ],
+    button: "Fly!",
+    onStart() {
+      reset();
+      state = "play";
+      held = false;
+    },
+  });
+</script>
+</body>
+</html>

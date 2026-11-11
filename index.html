@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CS Booth Arcade</title>
+<link rel="stylesheet" href="assets/arcade.css">
+<style>
+  main { max-width: 1180px; margin: 0 auto; padding: 18px 16px; }
+  .hero { margin-bottom: 12px; }
+  .hero h1 { margin: 0; font-size: clamp(36px, 6vw, 60px); line-height: 1; color: var(--green); }
+  .hero p { margin: 6px 0 0; color: var(--muted); font-size: 19px; }
+
+  .tabs { display: flex; gap: 6px; margin-bottom: 16px; border-bottom: 2px solid var(--line); }
+  .tabs button { border: 0; border-bottom: 3px solid transparent; border-radius: 0; background: none; padding: 8px 14px; color: var(--muted); margin-bottom: -2px; }
+  .tabs button[aria-selected="true"] { color: var(--green); border-bottom-color: var(--green); }
+
+  .section { margin: 0 0 10px; font-size: 15px; color: var(--muted); letter-spacing: .12em; text-transform: uppercase; }
+  .games { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .game {
+    display: flex; flex-direction: column; gap: 4px; padding: 12px 16px;
+    text-decoration: none; background: var(--panel);
+    border: 2px solid var(--line); border-top: 6px solid var(--accent); border-radius: 10px;
+  }
+  .game:hover { border-color: var(--accent); transform: translateY(-3px); }
+  .game h2 { margin: 0; font-size: 21px; color: var(--accent); }
+  .game p { margin: 0; flex: 1; font-size: 16px; }
+  .game small { color: var(--muted); font-size: 13px; }
+  .empty-note { color: var(--muted); }
+
+  .manage-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .manage-head p { margin: 0; color: var(--muted); font-size: 16px; }
+  .toggles { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px; margin-bottom: 20px; }
+  .toggle {
+    display: flex; align-items: center; gap: 12px; padding: 10px 14px; cursor: pointer;
+    background: var(--panel); border: 2px solid var(--line); border-left: 6px solid var(--accent); border-radius: 8px;
+  }
+  .toggle input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  .switch { flex: none; position: relative; width: 46px; height: 26px; background: var(--line); border-radius: 13px; }
+  .switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: var(--muted); transition: transform .15s; }
+  .toggle input:checked + .switch { background: var(--green); }
+  .toggle input:checked + .switch::after { transform: translateX(20px); background: #06281a; }
+  .toggle input:focus-visible + .switch { outline: 3px solid var(--amber); outline-offset: 2px; }
+  .toggle b { display: block; }
+  .toggle small { color: var(--muted); font-size: 13px; }
+  .toggle.off b { color: var(--muted); text-decoration: line-through; }
+
+  footer { display: flex; flex-wrap: wrap; gap: 12px; }
+  footer button { font-size: 14px; padding: 6px 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <div class="hero">
+    <h1>CS Booth Arcade</h1>
+    <p>Pick a game. Mouse, touch, keyboard or controller.</p>
+  </div>
+
+  <div>
+      <div class="tabs" role="tablist">
+        <button role="tab" id="tabPlay" aria-selected="true" aria-controls="playPanel">Games</button>
+        <button role="tab" id="tabManage" aria-selected="false" aria-controls="managePanel">Manage games</button>
+      </div>
+
+      <div id="playPanel" role="tabpanel" aria-labelledby="tabPlay">
+        <div id="sections"></div>
+        <footer>
+          <button id="fullscreen">Full screen</button>
+          <button id="reset">Reset all scores</button>
+        </footer>
+      </div>
+
+      <div id="managePanel" role="tabpanel" aria-labelledby="tabManage" hidden>
+        <div class="manage-head">
+          <p id="manageCount"></p>
+          <button id="showAll">Show all games</button>
+        </div>
+        <div id="toggles"></div>
+      </div>
+  </div>
+</main>
+
+<script src="assets/arcade.js"></script>
+<script>
+  // Every game in the arcade.
+  const CATALOG = [
+    { id: "astro", section: "Just for fun", file: "astro-storm.html", title: "Astro Storm 3D", accent: "#c99bff", desc: "Blast 3D asteroids before they smash into your ship.", meta: "Mouse or touch · 1 player" },
+    { id: "tunnel", section: "Just for fun", file: "hyper-tunnel.html", title: "Hyper Tunnel", accent: "var(--pink)", desc: "Race down a 3D tunnel at insane speed. Spin to dodge.", meta: "Keys or touch · 1 player" },
+    { id: "breaker", section: "Just for fun", file: "neon-breaker.html", title: "Neon Breaker", accent: "var(--blue)", desc: "Smash every brick. Grab power-ups for multi-ball.", meta: "Mouse or touch · 1 player" },
+    { id: "hockey", section: "Just for fun", file: "puck-clash.html", title: "Puck Clash", accent: "var(--green)", desc: "Air hockey against a friend or the CPU. First to 7!", meta: "Mouse, touch, keys or controllers · 1–2 players" },
+    { id: "glider", section: "Just for fun", file: "cave-glider.html", title: "Cave Glider", accent: "var(--amber)", desc: "Hold to fly up, let go to fall. Don't touch the cave!", meta: "One button · 1 player" },
+    { id: "hopper", section: "Just for fun", file: "cloud-hopper.html", title: "Cloud Hopper", accent: "#bfe6ff", desc: "Bounce from cloud to cloud. How high can you go?", meta: "Mouse, touch or keys · 1 player" },
+    { id: "stack", section: "Just for fun", file: "sky-stack.html", title: "Sky Stack", accent: "var(--amber)", desc: "Drop blocks to build the tallest tower. One button!", meta: "Tap or space · 1 player" },
+    { id: "duel", section: "Just for fun", file: "trail-duel.html", title: "Trail Duel", accent: "var(--blue)", desc: "Trap your friend with your light trail. Or take on the CPU.", meta: "Keyboard or controllers · 1–2 players" },
+    { id: "binary", section: "Brain games", file: "binary-blitz.html", title: "Binary Blitz", accent: "var(--green)", desc: "Flip bits to build numbers against the clock.", meta: "1 min · number systems" },
+    { id: "firewall", section: "Brain games", file: "firewall-frenzy.html", title: "Firewall Frenzy", accent: "var(--pink)", desc: "Zap the attacks, let the safe files through.", meta: "1–2 min · cybersecurity" },
+    { id: "bugs", section: "Brain games", file: "bug-hunt.html", title: "Bug Hunt", accent: "var(--amber)", desc: "Find the broken line of code. No experience needed.", meta: "75 sec · debugging" },
+    { id: "sort", section: "Brain games", file: "sort-showdown.html", title: "Sort Showdown", accent: "var(--blue)", desc: "Race real sorting algorithms. Can you beat Quicksort?", meta: "1 min · algorithms" },
+    { id: "robot", section: "Brain games", file: "robot-commander.html", title: "Robot Commander", accent: "#c99bff", desc: "Program a robot with blocks, functions and recursion.", meta: "3 min · programming" },
+  ];
+  const HIDDEN_KEY = "csArcade.hidden.v1";
+  const el = Arcade.el;
+
+  function loadHidden() {
+    try { return new Set(JSON.parse(localStorage.getItem(HIDDEN_KEY)) || []); }
+    catch (e) { return new Set(); }
+  }
+  function saveHidden() {
+    try { localStorage.setItem(HIDDEN_KEY, JSON.stringify([...hidden])); }
+    catch (e) { /* Hiding still works until the page reloads. */ }
+  }
+  let hidden = loadHidden();
+  const visible = () => CATALOG.filter((g) => !hidden.has(g.id));
+  const sections = [...new Set(CATALOG.map((g) => g.section))];
+
+  function renderGames() {
+    const box = document.getElementById("sections");
+    box.replaceChildren();
+    for (const name of sections) {
+      const games = visible().filter((g) => g.section === name);
+      if (!games.length) continue;
+      box.append(el("h2", { className: "section", textContent: name }), el("div", { className: "games" }, games.map((g) => {
+        const a = el("a", { className: "game", href: "games/" + g.file }, [
+          el("h2", { textContent: g.title }),
+          el("p", { textContent: g.desc }),
+          el("small", { textContent: g.meta }),
+        ]);
+        a.style.setProperty("--accent", g.accent);
+        return a;
+      })));
+    }
+    if (!box.children.length) {
+      box.append(el("p", { className: "empty-note", textContent: "Every game is hidden. Open “Manage games” to turn some back on." }));
+    }
+  }
+
+  function renderToggles() {
+    const box = document.getElementById("toggles");
+    box.replaceChildren();
+    for (const name of sections) {
+      box.append(el("h2", { className: "section", textContent: name }), el("div", { className: "toggles" }, CATALOG.filter((g) => g.section === name).map((g) => {
+        const input = el("input", { type: "checkbox", checked: !hidden.has(g.id) });
+        const status = el("small");
+        const row = el("label", { className: "toggle" }, [
+          input,
+          el("span", { className: "switch" }),
+          el("span", {}, [el("b", { textContent: g.title }), status]),
+        ]);
+        row.style.setProperty("--accent", g.accent);
+        const paint = () => {
+          row.classList.toggle("off", !input.checked);
+          status.textContent = input.checked ? "Shown" : "Hidden";
+        };
+        paint();
+        // Update in place so keyboard focus stays on the switch.
+        input.addEventListener("change", () => {
+          if (input.checked) hidden.delete(g.id);
+          else hidden.add(g.id);
+          saveHidden();
+          paint();
+          renderGames();
+          updateCount();
+        });
+        return row;
+      })));
+    }
+    updateCount();
+  }
+
+  function updateCount() {
+    const n = visible().length;
+    document.getElementById("manageCount").textContent =
+      "Showing " + n + " of " + CATALOG.length + " games. Hidden games leave the menu on this computer; their scores are kept.";
+  }
+
+  function refresh() {
+    renderGames();
+    renderToggles();
+  }
+
+  function selectTab(manage) {
+    document.getElementById("tabPlay").setAttribute("aria-selected", !manage);
+    document.getElementById("tabManage").setAttribute("aria-selected", manage);
+    document.getElementById("playPanel").hidden = manage;
+    document.getElementById("managePanel").hidden = !manage;
+  }
+  document.getElementById("tabPlay").addEventListener("click", () => selectTab(false));
+  document.getElementById("tabManage").addEventListener("click", () => selectTab(true));
+  document.getElementById("showAll").addEventListener("click", () => {
+    hidden.clear();
+    saveHidden();
+    refresh();
+  });
+
+  document.getElementById("fullscreen").addEventListener("click", () => {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else document.documentElement.requestFullscreen();
+  });
+  document.getElementById("reset").addEventListener("click", () => {
+    if (confirm("Delete every high score on this computer?")) {
+      Arcade.clearScores();
+    }
+  });
+
+  refresh();
+</script>
+</body>
+</html>

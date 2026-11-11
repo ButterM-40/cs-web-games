@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sky Stack</title>
+<link rel="stylesheet" href="../assets/arcade.css">
+<style>
+  .view canvas { cursor: pointer; }
+</style>
+</head>
+<body class="canvas-game" data-pad-hint="Controller: press A to drop.">
+<header class="bar">
+  <a href="../index.html">&larr; All games</a>
+  <h1>Sky Stack</h1>
+  <div class="stats">
+    <div class="stat"><small>Height</small><b id="height">0</b></div>
+    <div class="stat"><small>Score</small><b id="score">0</b></div>
+  </div>
+</header>
+<div class="view"><canvas id="c"></canvas></div>
+
+<script src="../assets/arcade.js"></script>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const canvas = $("c");
+  const ctx = canvas.getContext("2d");
+  const LAYER = 22, BASE = 100, RANGE = 150, PERFECT = 4;
+
+  let W = 0, H = 0, S = 1, CX = 0, BY = 0;
+  let state = "intro", tower = [], cur = null, axis = "x", dir = 1, offset = -RANGE;
+  let pieces = [], camY = 0, score = 0, perfects = 0, streak = 0, deadTimer = 0;
+  let popup = { text: "", life: 0 };
+  const stars = Array.from({ length: 90 }, () => [Math.random(), Math.random() * 0.7, Math.random() * 1.5 + 0.5]);
+
+  function resize() {
+    ({ w: W, h: H } = Arcade.fitCanvas(canvas, ctx));
+    S = Math.min(W, H * 1.1) * 0.0024;
+    CX = W / 2;
+    BY = H * 0.78;
+  }
+
+  const iso = (x, y, z) => [CX + (x - z) * 0.866 * S, BY - (x + z) * 0.5 * S - (y - camY) * S];
+  const sizeKey = () => (axis === "x" ? "w" : "d");
+  const topBlock = () => tower[tower.length - 1];
+
+  function face(pts, color) {
+    const p = pts.map(([x, y, z]) => iso(x, y, z));
+    ctx.beginPath();
+    ctx.moveTo(p[0][0], p[0][1]);
+    for (let i = 1; i < p.length; i++) ctx.lineTo(p[i][0], p[i][1]);
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+  }
+
+  function box(b, height, muted) {
+    const { x, y, z, w, d, hue } = b;
+    const t = y + height;
+    const sat = muted ? 15 : 75;
+    face([[x, y, z], [x, y, z + d], [x, t, z + d], [x, t, z]], `hsl(${hue} ${sat}% ${muted ? 25 : 42}%)`);
+    face([[x, y, z], [x + w, y, z], [x + w, t, z], [x, t, z]], `hsl(${hue} ${sat}% ${muted ? 32 : 54}%)`);
+    face([[x, t, z], [x + w, t, z], [x + w, t, z + d], [x, t, z + d]], `hsl(${hue} ${sat}% ${muted ? 40 : 68}%)`);
+  }
+
+  function newBlock() {
+    const t = topBlock();
+    axis = tower.length % 2 ? "x" : "z";
+    offset = -RANGE;
+    dir = 1;
+    cur = { ...t, y: t.y + LAYER, hue: (200 + tower.length * 9) % 360 };
+    cur[axis] = t[axis] + offset;
+  }
+
+  function reset() {
+    tower = [{ x: -50, z: -50, w: BASE, d: BASE, y: 0, hue: 200 }];
+    pieces = [];
+    camY = 0;
+    score = perfects = streak = 0;
+    newBlock();
+  }
+
+  function say(text) { popup = { text, life: 1.1 }; }
+
+  function drop() {
+    if (state !== "play") return;
+    const t = topBlock(), sz = sizeKey();
+    const delta = cur[axis] - t[axis];
+    if (Math.abs(delta) <= PERFECT) {
+      cur[axis] = t[axis];
+      streak++;
+      perfects++;
+      score += 2;
+      say(streak > 1 ? "PERFECT x" + streak : "PERFECT!");
+      if (streak >= 3) {
+        const grow = Math.min(8, BASE - cur[sz]);
+        cur[sz] += grow;
+        cur[axis] -= grow / 2;
+      }
+    } else {
+      const overlap = cur[sz] - Math.abs(delta);
+      if (overlap <= 0) {
+        pieces.push({ ...cur, vy: 0 });
+        cur = null;
+        state = "dead";
+        deadTimer = 1.3;
+        say("MISSED!");
+        return;
+      }
+      streak = 0;
+      score += 1;
+      const piece = { ...cur, vy: 0 };
+      if (delta > 0) {
+        piece[axis] = t[axis] + t[sz];
+        piece[sz] = delta;
+      } else {
+        piece[axis] = cur[axis];
+        piece[sz] = -delta;
+        cur[axis] = t[axis];
+      }
+      cur[sz] = overlap;
+      pieces.push(piece);
+    }
+    tower.push(cur);
+    newBlock();
+  }
+
+  function update(dt) {
+    popup.life -= dt;
+    for (const p of pieces) { p.vy -= 900 * dt; p.y += p.vy * dt; }
+    pieces = pieces.filter((p) => p.y > camY - 700);
+    const target = Math.max(0, topBlock().y - LAYER * 5);
+    camY += (target - camY) * Math.min(1, dt * 4);
+
+    if (state === "dead") {
+      deadTimer -= dt;
+      if (deadTimer <= 0) {
+        state = "over";
+        Arcade.over({
+          game: "stack",
+          score,
+          headline: "Tower of " + (tower.length - 1) + " blocks",
+          lesson: perfects + " perfect drop" + (perfects === 1 ? "" : "s") + ". Perfects are worth double!",
+        });
+      }
+    }
+    if (!cur) return;
+    const speed = state === "play" ? Math.min(380, 150 + tower.length * 6) : 90;
+    offset += dir * speed * dt;
+    if (offset > RANGE) { offset = RANGE; dir = -1; }
+    if (offset < -RANGE) { offset = -RANGE; dir = 1; }
+    cur[axis] = topBlock()[axis] + offset;
+  }
+
+  const mix = (a, b, t) => a.map((v, i) => Math.round(v + (b[i] - v) * t));
+
+  function draw() {
+    const t = Math.min(1, (tower.length - 1) / 45);
+    const sky = ctx.createLinearGradient(0, 0, 0, H);
+    sky.addColorStop(0, `rgb(${mix([110, 190, 255], [6, 8, 30], t)})`);
+    sky.addColorStop(1, `rgb(${mix([255, 214, 235], [50, 20, 90], t)})`);
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, W, H);
+    if (t > 0.4) {
+      ctx.fillStyle = `rgba(255, 255, 255, ${(t - 0.4) * 1.6})`;
+      for (const [x, y, r] of stars) ctx.fillRect(x * W, y * H, r, r);
+    }
+
+    box({ x: -50, y: -600, z: -50, w: BASE, d: BASE, hue: 230 }, 600, true);
+    const t0 = topBlock();
+    const midTop = t0.x + t0.w / 2 + t0.z + t0.d / 2;
+    const behind = (p) => p.x + p.w / 2 + p.z + p.d / 2 > midTop;
+    pieces.filter(behind).forEach((p) => box(p, LAYER));
+    tower.forEach((b) => box(b, LAYER));
+    pieces.filter((p) => !behind(p)).forEach((p) => box(p, LAYER));
+    if (cur) box(cur, LAYER);
+
+    ctx.textAlign = "center";
+    ctx.fillStyle = t > 0.5 ? "#ffffff" : "#1b1f3a";
+    ctx.font = `bold ${Math.round(Math.min(W, H) * 0.12)}px Consolas, monospace`;
+    if (state !== "intro") ctx.fillText(tower.length - 1, CX, H * 0.16);
+    if (popup.life > 0) {
+      ctx.globalAlpha = Math.min(1, popup.life * 2);
+      ctx.fillStyle = popup.text === "MISSED!" ? "#ff5d8f" : "#ffc94d";
+      ctx.font = `bold ${Math.round(Math.min(W, H) * 0.06)}px Consolas, monospace`;
+      ctx.fillText(popup.text, CX, H * 0.26);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    update(dt);
+    draw();
+    $("height").textContent = tower.length - 1;
+    $("score").textContent = score;
+    requestAnimationFrame(frame);
+  }
+
+  canvas.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    drop();
+  });
+  window.addEventListener("keydown", (e) => {
+    if (e.key !== " " && e.key !== "Enter") return;
+    if (state !== "play") return;
+    e.preventDefault();
+    if (!e.repeat) drop();
+  });
+  window.addEventListener("resize", resize);
+
+  resize();
+  reset();
+  Arcade.watchIdle();
+  requestAnimationFrame(frame);
+  Arcade.intro({
+    title: "Sky Stack",
+    how: [
+      "Tap, click or press space to drop the sliding block.",
+      "Any part hanging over the edge gets sliced off.",
+      "Line it up perfectly to keep your size. Three perfects in a row grows the block!",
+      "Miss the tower completely and it's game over.",
+    ],
+    button: "Build!",
+    onStart() {
+      reset();
+      state = "play";
+    },
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Robot Commander</title>
+<link rel="stylesheet" href="../assets/arcade.css">
+<style>
+  .layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+  #title { margin: 0; font-size: 24px; color: #c99bff; }
+  #tip { margin: 4px 0 14px; color: var(--amber); min-height: 50px; }
+  #board { position: relative; display: grid; max-width: 460px; background: #070b17; border: 2px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .cell { aspect-ratio: 1; display: flex; align-items: center; justify-content: center; border: 1px solid var(--panel-2); color: var(--amber); font-size: clamp(16px, 3.4vw, 34px); }
+  .cell.wall { background: var(--line); }
+  #robot { position: absolute; top: 0; left: 0; aspect-ratio: 1; display: flex; align-items: center; justify-content: center; transition: transform .2s linear; }
+  #robotFace { color: var(--green); font-size: clamp(22px, 5vw, 46px); line-height: 1; transition: transform .2s linear; }
+  .palette { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+  .palette button { flex: 1 1 auto; padding: 10px 8px; white-space: nowrap; }
+  .program { padding: 10px; margin-bottom: 12px; background: var(--panel); border: 2px solid var(--line); border-radius: 10px; cursor: pointer; }
+  .program.active { border-color: var(--green); }
+  .program h3 { display: flex; justify-content: space-between; margin: 0 0 8px; font-size: 16px; }
+  .program h3 small { color: var(--muted); font-weight: 400; }
+  .slots { display: flex; flex-wrap: wrap; gap: 6px; min-height: 46px; }
+  .block { min-width: 46px; height: 46px; padding: 0 8px; font-weight: 700; }
+  .block.running { background: var(--amber); border-color: var(--amber); color: #2a1d00; }
+  .controls { display: flex; flex-wrap: wrap; gap: 10px; }
+  #message { min-height: 30px; margin: 12px 0 0; color: var(--pink); }
+  @media (max-width: 760px) { .layout { grid-template-columns: minmax(0, 1fr); } }
+</style>
+</head>
+<body data-pad-hint="Controller: D-pad or stick to pick, A to press. Keyboard: arrow keys and Enter.">
+<header class="bar">
+  <a href="../index.html">&larr; All games</a>
+  <h1>Robot Commander</h1>
+  <div class="stats">
+    <div class="stat"><small>Level</small><b id="level">1/8</b></div>
+    <div class="stat" id="timeStat"><small>Time</small><b id="time">180</b></div>
+    <div class="stat"><small>Score</small><b id="score">0</b></div>
+  </div>
+</header>
+
+<div class="stage">
+  <div class="layout">
+    <section>
+      <h2 id="title"></h2>
+      <p id="tip"></p>
+      <div id="board"></div>
+    </section>
+    <section>
+      <div class="palette" id="palette"></div>
+      <div id="programs"></div>
+      <div class="controls">
+        <button id="run" class="primary">&#9654; Run</button>
+        <button id="clear">Clear</button>
+        <button id="skip">Skip level</button>
+      </div>
+      <p id="message" aria-live="polite"></p>
+    </section>
+  </div>
+</div>
+
+<script src="../assets/arcade.js"></script>
+<script src="robot-logic.js"></script>
+<script>
+  const { LEVELS, parse, simulate } = RobotLogic;
+  const OPS = { M: ["↑", "Move"], L: ["↰", "Left"], R: ["↱", "Right"], F: ["F", "Call"] };
+  const ANGLE = { "^": 0, ">": 90, v: 180, "<": 270 };
+  const FAIL = {
+    crash: "Crash! The robot hit a wall. Computers do exactly what you say.",
+    incomplete: "The program ended, but some chips are left.",
+    overflow: "Stack overflow! The program never stopped. Your code looped forever.",
+  };
+  const FRAME_MS = 240;
+  const $ = (id) => document.getElementById(id);
+
+  let levelIndex = 0, level = LEVELS[0];
+  let programs = { main: [], fn: [] }, active = "main";
+  let score = 0, solved = 0, timeLeft = 180000, clockOn = false, animating = false, last = 0, angle = 0, animTimer = 0;
+  let cells = {}, robotEl, faceEl;
+
+  function placeRobot(x, y, dir) {
+    robotEl.style.transform = `translate(${x * 100}%, ${y * 100}%)`;
+    // Take the shortest rotation so the arrow never spins the long way round.
+    let delta = (ANGLE[dir] - angle) % 360;
+    if (delta > 180) delta -= 360;
+    if (delta < -180) delta += 360;
+    angle += delta;
+    faceEl.style.transform = `rotate(${angle}deg)`;
+  }
+
+  function showChips(chips) {
+    Object.entries(cells).forEach(([key, cell]) => {
+      cell.textContent = chips.has(key) ? "◆" : "";
+    });
+  }
+
+  function resetBoard() {
+    const { robot, chips } = parse(level);
+    placeRobot(robot.x, robot.y, robot.dir);
+    showChips(chips);
+  }
+
+  function buildBoard() {
+    const board = $("board");
+    const cols = level.grid[0].length;
+    board.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+    board.replaceChildren();
+    cells = {};
+    level.grid.forEach((row, y) => {
+      [...row].forEach((c, x) => {
+        const cell = Arcade.el("div", { className: "cell" + (c === "#" ? " wall" : "") });
+        cells[x + "," + y] = cell;
+        board.append(cell);
+      });
+    });
+    faceEl = Arcade.el("span", { id: "robotFace", textContent: "▲" });
+    robotEl = Arcade.el("div", { id: "robot" }, [faceEl]);
+    robotEl.style.width = 100 / cols + "%";
+    board.append(robotEl);
+    angle = 0;
+    resetBoard();
+  }
+
+  function drawPalette() {
+    $("palette").replaceChildren(...Object.entries(OPS)
+      .filter(([op]) => op !== "F" || level.fn > 0)
+      .map(([op, [icon, name]]) => {
+        const b = Arcade.el("button", { type: "button", textContent: icon + " " + name });
+        b.addEventListener("click", () => addBlock(op));
+        return b;
+      }));
+  }
+
+  function drawPrograms(runningName, runningIndex) {
+    const names = level.fn > 0 ? ["main", "fn"] : ["main"];
+    $("programs").replaceChildren(...names.map((name) => {
+      const limit = name === "main" ? level.main : level.fn;
+      const slots = Arcade.el("div", { className: "slots" }, programs[name].map((op, i) => {
+        const running = name === runningName && i === runningIndex;
+        const b = Arcade.el("button", { className: "block" + (running ? " running" : ""), type: "button", textContent: OPS[op][0], ariaLabel: "Remove " + OPS[op][1] });
+        b.addEventListener("click", (e) => {
+          e.stopPropagation();
+          if (animating) return;
+          programs[name].splice(i, 1);
+          active = name;
+          drawPrograms();
+        });
+        return b;
+      }));
+      const box = Arcade.el("div", { className: "program" + (name === active ? " active" : "") }, [
+        Arcade.el("h3", {}, [
+          Arcade.el("span", { textContent: name === "main" ? "Main" : "Function F" }),
+          Arcade.el("small", { textContent: programs[name].length + "/" + limit + " blocks" }),
+        ]),
+        slots,
+      ]);
+      box.tabIndex = 0;
+      box.addEventListener("keydown", (e) => {
+        if (e.target === box && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); box.click(); }
+      });
+      box.addEventListener("click", () => {
+        active = name;
+        drawPrograms();
+      });
+      return box;
+    }));
+  }
+
+  function addBlock(op) {
+    if (animating) return;
+    const limit = active === "main" ? level.main : level.fn;
+    if (programs[active].length >= limit) {
+      $("message").textContent = "That program is full. Tap a block to remove it.";
+      return;
+    }
+    $("message").textContent = "";
+    programs[active].push(op);
+    drawPrograms();
+  }
+
+  function setControls(disabled) {
+    ["run", "clear", "skip"].forEach((id) => { $(id).disabled = disabled; });
+  }
+
+  function run() {
+    if (animating || !programs.main.length) return;
+    resetBoard();
+    $("message").textContent = "";
+    const { frames, result } = simulate(level, programs.main, programs.fn);
+    animating = true;
+    setControls(true);
+    let i = 0;
+    const play = () => {
+      if (i < frames.length) {
+        const f = frames[i++];
+        placeRobot(f.x, f.y, f.dir);
+        showChips(new Set(f.chips));
+        drawPrograms(f.name, f.i);
+        animTimer = setTimeout(play, FRAME_MS);
+        return;
+      }
+      animating = false;
+      setControls(false);
+      drawPrograms();
+      if (result === "win") solve();
+      else {
+        $("message").textContent = FAIL[result];
+        $("board").classList.add("shake");
+        setTimeout(() => $("board").classList.remove("shake"), 400);
+      }
+    };
+    play();
+  }
+
+  function solve() {
+    const used = programs.main.length + programs.fn.length;
+    const spare = level.main + level.fn - used;
+    score += 100 + spare * 10;
+    solved++;
+    $("score").textContent = score;
+    nextLevel();
+  }
+
+  function nextLevel() {
+    levelIndex++;
+    if (levelIndex >= LEVELS.length) finish(solved === LEVELS.length);
+    else loadLevel();
+  }
+
+  function loadLevel() {
+    level = LEVELS[levelIndex];
+    programs = { main: [], fn: [] };
+    active = "main";
+    $("level").textContent = levelIndex + 1 + "/" + LEVELS.length;
+    $("title").textContent = level.title;
+    $("tip").textContent = level.tip;
+    $("message").textContent = "";
+    buildBoard();
+    drawPalette();
+    drawPrograms();
+  }
+
+  function finish(completed) {
+    clockOn = false;
+    clearTimeout(animTimer);
+    animating = true;
+    setControls(true);
+    if (completed) score += Math.ceil(timeLeft / 1000) * 2;
+    Arcade.over({
+      game: "robot",
+      score,
+      headline: completed ? "All levels cleared!" : solved + " level" + (solved === 1 ? "" : "s") + " cleared",
+      lesson: "You just used sequencing, functions and maybe recursion: the building blocks of real software.",
+    });
+  }
+
+  function tick(now) {
+    if (!clockOn) return;
+    timeLeft = Math.max(0, timeLeft - (now - last));
+    last = now;
+    $("time").textContent = Math.ceil(timeLeft / 1000);
+    $("timeStat").classList.toggle("warn", timeLeft < 20000);
+    if (timeLeft <= 0) {
+      finish(false);
+      return;
+    }
+    requestAnimationFrame(tick);
+  }
+
+  $("run").addEventListener("click", run);
+  $("clear").addEventListener("click", () => {
+    if (animating) return;
+    programs = { main: [], fn: [] };
+    active = "main";
+    $("message").textContent = "";
+    resetBoard();
+    drawPrograms();
+  });
+  $("skip").addEventListener("click", () => {
+    if (!animating) nextLevel();
+  });
+
+  Arcade.watchIdle();
+  loadLevel();
+  Arcade.intro({
+    title: "Robot Commander",
+    how: [
+      "Collect every yellow chip by writing a program for the robot.",
+      "Tap blocks to add them, then press Run.",
+      "Tap a block in your program to remove it.",
+      "Unused blocks earn bonus points. You have 3 minutes!",
+    ],
+    onStart() {
+      clockOn = true;
+      last = performance.now();
+      requestAnimationFrame(tick);
+    },
+  });
+</script>
+</body>
+</html>
